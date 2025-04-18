@@ -1,0 +1,20 @@
+Description: Sets the default theme for debian
+Forwarded: not-needed
+
+---
+ xfsettingsd/xsettings.xml |    4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+--- a/xfsettingsd/xsettings.xml	2023-02-27 00:29:27.096084977 -0500
++++ b/xfsettingsd/xsettings.xml	2023-02-27 00:29:27.092084995 -0500
+@@ -6,8 +6,8 @@
+ 
+ <channel name="xsettings" version="1.0">
+   <property name="Net" type="empty">
+-    <property name="ThemeName" type="empty"/>
+-    <property name="IconThemeName" type="empty"/>
++    <property name="ThemeName" type="string" value="Xfce"/>
++    <property name="IconThemeName" type="string" value="Tango"/>
+     <property name="DoubleClickTime" type="int" value="400"/>
+     <property name="DoubleClickDistance" type="int" value="5"/>
+     <property name="DndDragThreshold" type="int" value="8"/>
