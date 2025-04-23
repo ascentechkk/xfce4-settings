@@ -2624,6 +2624,15 @@ find_vendor (const char *code)
 };
 
 char *
+rl_make_rlmodel (const MonitorInfo *info)
+{
+    return g_strdup_printf (
+        "%s:%d",
+        info->manufacturer_code,
+        info->product_code);
+}
+
+char *
 make_display_name (const MonitorInfo *info, guint output)
 {
     const char *vendor;

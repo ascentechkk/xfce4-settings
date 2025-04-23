@@ -54,8 +54,12 @@
 #endif /* XI_PROP_ENABLED */
 
 static void             xfce_pointers_helper_finalize                 (GObject            *object);
+
+#ifdef NO_RESALIO_LYNX
 static void             xfce_pointers_helper_syndaemon_stop           (XfcePointersHelper *helper);
 static void             xfce_pointers_helper_syndaemon_check          (XfcePointersHelper *helper);
+#endif /* NO_RESALIO_LYNX */
+
 static void             xfce_pointers_helper_restore_devices          (XfcePointersHelper *helper,
                                                                        XID                *xid);
 static void             xfce_pointers_helper_channel_property_changed (XfconfChannel      *channel,
@@ -89,9 +93,9 @@ struct _XfcePointersHelper
     /* xfconf channel */
     XfconfChannel *channel;
 
-#ifdef DEVICE_PROPERTIES
+#if defined (DEVICE_PROPERTIES) && defined (NO_RESALIO_LYNX)
     GPid           syndaemon_pid;
-#endif
+#endif /* DEVICE_PROPERTIES && NO_RESALIO_LYNX */
 
 #ifdef DEVICE_HOTPLUGGING
     /* device presence event type */
@@ -108,7 +112,19 @@ typedef struct
 }
 XfcePointerData;
 
-
+#ifndef NO_RESALIO_LYNX
+typedef union
+{
+    gchar   c;
+    guchar  uc;
+    gint16  i16;
+    guint16 u16;
+    gint32  i32;
+    guint32 u32;
+    float   f;
+    Atom    a;
+} propdata_t;
+#endif /* NO_RESALIO_LYNX */
 
 G_DEFINE_TYPE (XfcePointersHelper, xfce_pointers_helper, G_TYPE_OBJECT);
 
@@ -168,8 +184,10 @@ xfce_pointers_helper_init (XfcePointersHelper *helper)
         g_signal_connect (G_OBJECT (helper->channel), "property-changed",
              G_CALLBACK (xfce_pointers_helper_channel_property_changed), helper);
 
+#ifdef NO_RESALIO_LYNX
         /* launch syndaemon if required */
         xfce_pointers_helper_syndaemon_check (helper);
+#endif /* NO_RESALIO_LYNX */
 
 #ifdef DEVICE_HOTPLUGGING
         if (G_LIKELY (xdisplay != NULL))
@@ -194,8 +212,9 @@ xfce_pointers_helper_init (XfcePointersHelper *helper)
 static void
 xfce_pointers_helper_finalize (GObject *object)
 {
+#ifdef NO_RESALIO_LYNX
     xfce_pointers_helper_syndaemon_stop (XFCE_POINTERS_HELPER (object));
-
+#endif /* NO_RESALIO_LYNX */
     (*G_OBJECT_CLASS (xfce_pointers_helper_parent_class)->finalize) (object);
 }
 
@@ -257,6 +276,7 @@ xfce_pointers_is_libinput (Display *xdisplay,
 
 
 
+#ifdef NO_RESALIO_LYNX
 static void
 xfce_pointers_helper_syndaemon_stop (XfcePointersHelper *helper)
 {
@@ -270,7 +290,7 @@ xfce_pointers_helper_syndaemon_stop (XfcePointersHelper *helper)
         g_spawn_close_pid (helper->syndaemon_pid);
         helper->syndaemon_pid = 0;
     }
-#endif
+#endif /* DEVICE_PROPERTIES */
 }
 
 
@@ -363,8 +383,9 @@ xfce_pointers_helper_syndaemon_check (XfcePointersHelper *helper)
         xfsettings_dbg (XFSD_DEBUG_POINTERS, "Started syndaemon with pid %d",
                         helper->syndaemon_pid);
     }
-#endif
+#endif /* DEVICE_PROPERTIES */
 }
+#endif /* NO_RESALIO_LYNX */
 
 
 
@@ -546,6 +567,131 @@ xfce_pointers_helper_gcd (gint num,
 
 
 
+#ifndef NO_RESALIO_LYNX
+/* copied code from mouse-settings */
+static gboolean
+xfce_pointers_get_device_prop (Display     *xdisplay,
+                               XDevice     *device,
+                               const gchar *prop_name,
+                               Atom         type,
+                               guint        n_items,
+                               propdata_t  *retval)
+{
+    Atom     prop, float_type, type_ret;
+    gulong   n_items_ret, bytes_after;
+    gint     rc, format, size;
+    guint    i;
+    guchar  *data, *ptr;
+    gboolean success;
+
+    prop = XInternAtom (xdisplay, prop_name, False);
+    float_type = XInternAtom (xdisplay, "FLOAT", False);
+
+    gdk_error_trap_push ();
+    rc = XGetDeviceProperty (xdisplay, device, prop, 0, 1, False,
+                             type, &type_ret, &format, &n_items_ret,
+                             &bytes_after, &data);
+    gdk_error_trap_pop ();
+    if (rc == Success && type_ret == type && n_items_ret >= n_items)
+    {
+        success = TRUE;
+        switch(format)
+        {
+            case 8:
+                size = sizeof (gchar);
+                break;
+            case 16:
+                size = sizeof (gint16);
+                break;
+            case 32:
+            default:
+                size = sizeof (gint32);
+                break;
+        }
+        ptr = data;
+
+        for (i = 0; i < n_items; i++)
+        {
+            switch (type_ret)
+            {
+                case XA_INTEGER:
+                    switch (format)
+                    {
+                        case 8:
+                            retval[i].c = *((gchar*) ptr);
+                            break;
+                        case 16:
+                            retval[i].i16 = *((gint16 *) ptr);
+                            break;
+                        case 32:
+                            retval[i].i32 = *((gint32 *) ptr);
+                            break;
+                    }
+                    break;
+                case XA_CARDINAL:
+                    switch (format)
+                    {
+                        case 8:
+                            retval[i].uc = *((guchar*) ptr);
+                            break;
+                        case 16:
+                            retval[i].u16 = *((guint16 *) ptr);
+                            break;
+                        case 32:
+                            retval[i].u32 = *((guint32 *) ptr);
+                            break;
+                    }
+                    break;
+                case XA_ATOM:
+                    retval[i].a = *((Atom *) ptr);
+                    break;
+                default:
+                    if (type_ret == float_type)
+                    {
+                        retval[i].f = *((float*) ptr);
+                    }
+                    else
+                    {
+                        success = FALSE;
+                        g_warning ("Unhandled type, please implement it");
+                    }
+                    break;
+            }
+            ptr += size;
+        }
+        XFree (data);
+
+        return success;
+    }
+
+    return FALSE;
+}
+
+
+
+static gboolean
+xfce_pointers_get_libinput_accel_default (Display *xdisplay,
+                                          XDevice *device,
+                                          gdouble *val)
+{
+    propdata_t pdata[1];
+    Atom float_type;
+
+    float_type = XInternAtom (xdisplay, "FLOAT", False);
+    if (xfce_pointers_get_device_prop (xdisplay, device, LIBINPUT_PROP_ACCEL_DEFAULT, float_type, 1, &pdata[0]))
+    {
+        /* We use double internally, for whatever reason */
+        *val = (gdouble) pdata[0].f;
+
+        return TRUE;
+    }
+
+    return FALSE;
+}
+#endif /* NO_RESALIO_LYNX */
+
+
+
 static void
 xfce_pointers_helper_change_feedback (XDeviceInfo *device_info,
                                       XDevice     *device,
@@ -567,7 +713,22 @@ xfce_pointers_helper_change_feedback (XDeviceInfo *device_info,
         gdouble libinput_accel;
         GValue value = G_VALUE_INIT;
 
+#ifdef NO_RESALIO_LYNX
         libinput_accel = CLAMP ((acceleration / 5) - 1.0, -1.0, 1.0);
+#else
+        /* -1 is reset */
+        if (acceleration == -1)
+        {
+            if (!xfce_pointers_get_libinput_accel_default (xdisplay, device, &libinput_accel))
+            {
+                libinput_accel = 0.0;
+            }
+        }
+        else
+        {
+            libinput_accel = CLAMP ((acceleration / 5) - 1.0, -1.0, 1.0);
+        }
+#endif /* NO_RESALIO_LYNX */
         g_value_init (&value, G_TYPE_DOUBLE);
         g_value_set_double (&value, libinput_accel);
 
@@ -996,7 +1157,11 @@ xfce_pointers_helper_restore_devices (XfcePointersHelper *helper,
         g_snprintf (prop, sizeof (prop), "/%s/Acceleration", device_name);
         acceleration = xfconf_channel_get_double (helper->channel, prop, -1.00);
 
+#ifdef NO_RESALIO_LYNX
         if (threshold != -1 || acceleration != -1.00)
+#else
+        if (acceleration != -1.00)
+#endif /* NO_RESALIO_LYNX */
         {
             xfce_pointers_helper_change_feedback (device_info, device, xdisplay,
                                                   threshold, acceleration);
@@ -1060,7 +1225,9 @@ xfce_pointers_helper_channel_property_changed (XfconfChannel      *channel,
     if ((strcmp (property_name, "/DisableTouchpadWhileTyping") == 0) ||
         (strcmp (property_name, "/DisableTouchpadDuration") == 0))
     {
+#ifdef NO_RESALIO_LYNX
         xfce_pointers_helper_syndaemon_check (helper);
+#endif /* NO_RESALIO_LYNX */
         return;
     }
 
@@ -1109,11 +1276,13 @@ xfce_pointers_helper_channel_property_changed (XfconfChannel      *channel,
                     xfce_pointers_helper_change_button_mapping (device_info, device, xdisplay,
                                                                 -1, g_value_get_boolean (value));
                 }
+#ifdef NO_RESALIO_LYNX
                 else if (strcmp (names[1], "Threshold") == 0)
                 {
                     xfce_pointers_helper_change_feedback (device_info, device, xdisplay,
                                                           g_value_get_int (value), -2.00);
                 }
+#endif /* NO_RESALIO_LYNX */
                 else if (strcmp (names[1], "Acceleration") == 0)
                 {
                     xfce_pointers_helper_change_feedback (device_info, device, xdisplay,
@@ -1170,8 +1339,10 @@ xfce_pointers_helper_event_filter (GdkXEvent *xevent,
         if (dpn_event->devchange == DeviceAdded)
             xfce_pointers_helper_restore_devices (helper, &dpn_event->deviceid);
 
+#ifdef NO_RESALIO_LYNX
         /* check if we need to launch syndaemon */
         xfce_pointers_helper_syndaemon_check (helper);
+#endif /* NO_RESALIO_LYNX */
     }
 
     return GDK_FILTER_CONTINUE;
