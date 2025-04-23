@@ -77,8 +77,33 @@ display_settings_profile_name_exists (XfconfChannel *channel, const gchar *new_p
     return TRUE;
 }
 
+void
+rl_display_infos_free (GArray *display_infos)
+{
+    for (int i = 0; i < display_infos->len; i++)
+    {
+        RLDisplayInfo *item = g_array_index (display_infos, RLDisplayInfo*, i);
+        g_free (item->edid);
+        g_free (item->rlmodel);
+        g_slice_free (RLDisplayInfo, item);
+    }
+    g_array_free (display_infos, TRUE);
+}
+
+static gboolean
+rl_match_profile(RLDisplayInfo *display_info, gchar *edid, gchar *rlmodel, gboolean rlmodel_enabled)
+{
+    if (rlmodel_enabled && rlmodel && strlen (rlmodel) > 0)
+        return g_strcmp0 (display_info->rlmodel, rlmodel) == 0;
+
+    if (edid)
+        return g_strcmp0 (display_info->edid, edid) == 0;
+
+    return FALSE;
+}
+
 GList*
-display_settings_get_profiles (gchar **display_infos, XfconfChannel *channel)
+display_settings_get_profiles (GArray *display_infos, XfconfChannel *channel)
 {
     GHashTable *properties;
     GList      *channel_contents;
@@ -86,10 +111,12 @@ display_settings_get_profiles (gchar **display_infos, XfconfChannel *channel)
     GList      *current;
     guint       m;
     guint       noutput;
+    gboolean    rlmodel_enabled;
 
     properties = xfconf_channel_get_properties (channel, NULL);
     channel_contents = g_hash_table_get_keys (properties);
-    noutput = g_strv_length (display_infos);
+    noutput = display_infos->len;
+    rlmodel_enabled = xfconf_channel_get_bool (channel, "/RLModelEnabled", FALSE);
 
     /* get all profiles */
     current = g_list_first (channel_contents);
@@ -103,6 +130,7 @@ display_settings_get_profiles (gchar **display_infos, XfconfChannel *channel)
         guint           monitors = 0;
         gchar         **current_elements = g_strsplit (current->data, "/", -1);
         gchar          *profile_name;
+        RLDisplayInfo  *display_info;
 
         /* Only process the profiles and skip all other xfconf properties */
         /* If xfconf ever supports just getting the first-level children of a property
@@ -126,6 +154,7 @@ display_settings_get_profiles (gchar **display_infos, XfconfChannel *channel)
         {
             gchar *property;
             gchar *current_edid;
+            gchar *current_rlmodel;
 
             gchar ** property_elements = g_strsplit (key, "/", -1);
             if (get_size (property_elements) == 3) {
@@ -134,11 +163,15 @@ display_settings_get_profiles (gchar **display_infos, XfconfChannel *channel)
                 property = g_strdup_printf ("%s/EDID", (gchar*)key);
                 current_edid = xfconf_channel_get_string (channel, property, NULL);
 
-                if (current_edid) {
+                property = g_strdup_printf ("%s/RLMODEL", (gchar*)key);
+                current_rlmodel = xfconf_channel_get_string (channel, property, NULL);
+
+                if (current_edid || current_rlmodel) {
 
                     for (m = 0; m < noutput; ++m)
                     {
-                        if (g_strcmp0 (display_infos[m], current_edid) == 0)
+                        display_info = g_array_index (display_infos, RLDisplayInfo*, m);
+                        if (rl_match_profile (display_info, current_edid, current_rlmodel, rlmodel_enabled))
                         {
                             profile_match ++;
                         }

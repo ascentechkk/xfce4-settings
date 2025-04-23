@@ -275,7 +275,7 @@
             <child>
               <object class="GtkButton" id="button-help">
                 <property name="label" translatable="yes">_Help</property>
-                <property name="visible">True</property>
+                <property name="visible">False</property>
                 <property name="can-focus">True</property>
                 <property name="receives-default">True</property>
                 <property name="image">image6</property>
@@ -435,7 +435,7 @@
                         </child>
                         <child>
                           <object class="GtkMenuButton" id="primary-info-button">
-                            <property name="visible">True</property>
+                            <property name="visible">False</property>
                             <property name="can-focus">True</property>
                             <property name="receives-default">True</property>
                             <property name="relief">none</property>
