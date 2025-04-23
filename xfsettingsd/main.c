@@ -35,6 +35,7 @@
 #include <errno.h>
 #endif
 
+#include <syslog.h>
 #include <glib.h>
 #include <gio/gio.h>
 #include <gtk/gtk.h>
@@ -224,6 +225,8 @@ main (gint argc, gchar **argv)
     gboolean              name_owned;
     GVariant             *name_owned_variant;
 
+    openlog ("xfsettingsd", LOG_PID, LOG_USER);
+
     xfce_textdomain (GETTEXT_PACKAGE, LOCALEDIR, "UTF-8");
 
     context = g_option_context_new (NULL);
@@ -245,6 +248,8 @@ main (gint argc, gchar **argv)
         g_error_free (error);
         g_option_context_free (context);
 
+        closelog ();
+
         return EXIT_FAILURE;
     }
 
@@ -258,6 +263,8 @@ main (gint argc, gchar **argv)
         g_print ("\t%s\n\n", _("The Xfce development team. All rights reserved."));
         g_print (_("Please report bugs to <%s>."), PACKAGE_BUGREPORT);
         g_print ("\n");
+
+        closelog ();
 
         return EXIT_SUCCESS;
     }
@@ -285,6 +292,8 @@ main (gint argc, gchar **argv)
         {
             g_error ("Unable to open display.");
         }
+
+        closelog ();
 
         return EXIT_FAILURE;
     }
@@ -314,6 +323,9 @@ main (gint argc, gchar **argv)
         if (G_UNLIKELY (error)) {
             g_printerr ("%s: %s.\n", G_LOG_DOMAIN, error->message);
             g_error_free (error);
+
+            closelog ();
+
             return EXIT_FAILURE;
         }
 
@@ -323,6 +335,9 @@ main (gint argc, gchar **argv)
         if(G_UNLIKELY (name_owned && !opt_replace)) {
             xfsettings_dbg (XFSD_DEBUG_XSETTINGS, "Another instance is already running. Leaving.");
             g_dbus_connection_close_sync (dbus_connection, NULL, NULL);
+
+            closelog ();
+
             return EXIT_SUCCESS;
         }
 
@@ -338,6 +353,9 @@ main (gint argc, gchar **argv)
         g_printerr ("%s: %s.\n", G_LOG_DOMAIN, error->message);
         g_error ("Failed to connect to the dbus session bus.");
         g_error_free (error);
+
+        closelog ();
+
         return EXIT_FAILURE;
     }
 
@@ -345,6 +363,8 @@ main (gint argc, gchar **argv)
     {
         g_error ("Failed to connect to xfconf daemon: %s.", error->message);
         g_error_free (error);
+
+        closelog ();
 
         return EXIT_FAILURE;
     }
@@ -388,6 +408,8 @@ main (gint argc, gchar **argv)
         g_bus_unown_name (owner_id);
         g_dbus_connection_close_sync (dbus_connection, NULL, NULL);
     }
+
+    closelog ();
 
     return EXIT_SUCCESS;
 }
