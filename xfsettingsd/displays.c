@@ -57,7 +57,6 @@
 #define APPLY_SCHEME_PROP    "/Schemes/Apply"
 #define DEFAULT_SCHEME_NAME  "Default"
 #define ACTIVE_PROFILE       "/ActiveProfile"
-#define AUTO_ENABLE_PROFILES "/AutoEnableProfiles"
 #define OUTPUT_FMT           "/%s/%s"
 #define PRIMARY_PROP         OUTPUT_FMT "/Primary"
 #define ACTIVE_PROP          OUTPUT_FMT "/Active"
@@ -293,25 +292,14 @@ xfce_displays_helper_init (XfceDisplaysHelper *helper)
             helper->has_1_3 = (major > 1 || (major == 1 && minor >= 3));
 #endif
 
-            /*  check if we can auto-enable a profile */
-            if (xfconf_channel_get_bool (helper->channel, AUTO_ENABLE_PROFILES, FALSE) &&
-                xfconf_channel_get_int (helper->channel, NOTIFY_PROP, 1) > 0)
-            {
-                gchar *matching_profile = NULL;
+            gchar *matching_profile = NULL;
 
-                matching_profile = xfce_displays_helper_get_matching_profile (helper);
-                if (matching_profile)
-                {
-                    xfce_displays_helper_channel_apply (helper, matching_profile);
-                }
-                else {
-                    xfce_displays_helper_channel_apply (helper, DEFAULT_SCHEME_NAME);
-                }
-            }
-            /* restore the default scheme */
-            else {
+            matching_profile = xfce_displays_helper_get_matching_profile (helper);
+            if (matching_profile)
+                xfce_displays_helper_channel_apply (helper, matching_profile);
+            else 
                 xfce_displays_helper_channel_apply (helper, DEFAULT_SCHEME_NAME);
-            }
+                
         }
         else
         {
@@ -556,17 +544,13 @@ xfce_displays_helper_screen_on_event (GdkXEvent *xevent,
         if (old_outputs->len > helper->outputs->len ||
             old_outputs->len < helper->outputs->len)
         {
-            if (xfconf_channel_get_bool (helper->channel, AUTO_ENABLE_PROFILES, FALSE)
-                && autoconnect_mode > 0)
-            {
-                gchar *matching_profile = NULL;
+            gchar *matching_profile = NULL;
 
-                matching_profile = xfce_displays_helper_get_matching_profile (helper);
-                if (matching_profile)
-                {
-                    xfce_displays_helper_channel_apply (helper, matching_profile);
-                    return GDK_FILTER_CONTINUE;
-                }
+            matching_profile = xfce_displays_helper_get_matching_profile (helper);
+            if (matching_profile)
+            {
+                xfce_displays_helper_channel_apply (helper, matching_profile);
+                return GDK_FILTER_CONTINUE;
             }
             xfconf_channel_set_string (helper->channel, ACTIVE_PROFILE, DEFAULT_SCHEME_NAME);
         }
