@@ -1227,7 +1227,7 @@ display_setting_identity_popups_populate (void)
 }
 
 static void
-display_setting_mirror_displays_toggled (GtkToggleButton *togglebutton,
+display_setting_mirror_displays_toggled (GtkSwitch *sw,
                                          GtkBuilder      *builder)
 {
     XfceOutputInfo *output;
@@ -1237,11 +1237,7 @@ display_setting_mirror_displays_toggled (GtkToggleButton *togglebutton,
     if (!xfce_randr)
         return;
 
-    /* reset the inconsistent state, since the mirror checkbutton is being toggled */
-    if (gtk_toggle_button_get_inconsistent (togglebutton))
-        gtk_toggle_button_set_inconsistent (togglebutton, FALSE);
-
-    if (gtk_toggle_button_get_active (togglebutton))
+    if (gtk_switch_get_active (sw))
     {
         /* Activate mirror-mode with a single mode for all of them */
         clonable_modes = xfce_randr_clonable_modes (xfce_randr);
@@ -1296,7 +1292,7 @@ display_setting_mirror_displays_toggled (GtkToggleButton *togglebutton,
 static void
 display_setting_mirror_displays_populate (GtkBuilder *builder)
 {
-    GObject *check;
+    GObject *check, *label;
     RRMode  *clonable_modes = NULL;
     guint    n;
     gboolean cloned = TRUE;
@@ -1306,12 +1302,17 @@ display_setting_mirror_displays_populate (GtkBuilder *builder)
         return;
 
     check = gtk_builder_get_object (builder, "mirror-displays");
+    label = gtk_builder_get_object (builder, "mirror-label");
 
     if (xfce_randr->noutput > 1)
+    {
         gtk_widget_show (GTK_WIDGET (check));
+        gtk_widget_show (GTK_WIDGET (label));
+    }
     else
     {
         gtk_widget_hide (GTK_WIDGET (check));
+        gtk_widget_hide (GTK_WIDGET (label));
         return;
     }
 
@@ -1322,7 +1323,7 @@ display_setting_mirror_displays_populate (GtkBuilder *builder)
     gtk_widget_set_sensitive (GTK_WIDGET (check), clonable_modes != NULL);
     if (clonable_modes == NULL)
     {
-        gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (check), FALSE);
+        gtk_switch_set_active (GTK_SWITCH (check), FALSE);
         return;
     }
 
@@ -1346,20 +1347,7 @@ display_setting_mirror_displays_populate (GtkBuilder *builder)
     }
     g_free (clonable_modes);
 
-    /* if two displays are 'mirrored', i.e. their x and y positions are the same
-       we set the checkbutton to the inconsistent state */
-    if (mirrored == TRUE && cloned == FALSE)
-    {
-        gtk_toggle_button_set_inconsistent (GTK_TOGGLE_BUTTON (check), 1);
-    }
-    else
-    {
-        if (gtk_toggle_button_get_inconsistent (GTK_TOGGLE_BUTTON (check)))
-            gtk_toggle_button_set_inconsistent (GTK_TOGGLE_BUTTON (check), 0);
-        gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (check), cloned);
-    }
-
-
+    gtk_switch_set_active (GTK_SWITCH (check), cloned);
     /* Unblock the signal */
     g_signal_handlers_unblock_by_func (check, display_setting_mirror_displays_toggled,
                                        builder);
@@ -1808,7 +1796,7 @@ display_settings_dialog_new (GtkBuilder *builder)
 {
     GObject          *combobox;
     GtkCellRenderer  *renderer;
-    GObject          *label, *check, *primary, *mirror, *identify, *primary_indicator;
+    GObject          *label, *check, *primary, *mirror, *identify, *primary_indicator, *mirror_label;
     GObject          *revealer, *spinbutton;
     GtkWidget        *button;
     GtkTreeSelection *selection;
@@ -1837,18 +1825,22 @@ display_settings_dialog_new (GtkBuilder *builder)
     check = gtk_builder_get_object (builder, "output-on");
     primary = gtk_builder_get_object (builder, "primary");
     mirror = gtk_builder_get_object (builder, "mirror-displays");
+    mirror_label = gtk_builder_get_object(builder, "mirror-label");
     g_signal_connect (G_OBJECT (check), "state-set", G_CALLBACK (display_setting_output_toggled), builder);
     g_signal_connect (G_OBJECT (primary), "state-set", G_CALLBACK (display_setting_primary_toggled), builder);
-    g_signal_connect (G_OBJECT (mirror), "toggled", G_CALLBACK (display_setting_mirror_displays_toggled), builder);
+    g_signal_connect (G_OBJECT (mirror), "state-set", G_CALLBACK (display_setting_mirror_displays_toggled), builder);
+
     if (xfce_randr->noutput > 1)
     {
         gtk_widget_show (GTK_WIDGET (check));
         gtk_widget_show (GTK_WIDGET (mirror));
+        gtk_widget_show (GTK_WIDGET (mirror_label));
     }
     else
     {
         gtk_widget_hide (GTK_WIDGET (check));
         gtk_widget_hide (GTK_WIDGET (mirror));
+        gtk_widget_hide (GTK_WIDGET (mirror_label));
     }
 
     label = gtk_builder_get_object (builder, "label-reflection");
