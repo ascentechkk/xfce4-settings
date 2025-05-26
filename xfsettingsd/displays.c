@@ -38,6 +38,7 @@
 
 #include "common/display-profiles.h"
 #include "common/xfce-randr.h"
+#include "common/edid.h"
 
 #include "debug.h"
 #include "displays.h"
@@ -435,28 +436,39 @@ xfce_displays_helper_reload (XfceDisplaysHelper *helper)
 
 
 
-static gchar **
+static GArray *
 xfce_displays_helper_get_display_infos (gint       noutput,
                                         Display   *xdisplay,
                                         GPtrArray *outputs)
 {
-    gchar    **display_infos;
+    GArray    *display_infos;
     gint       m;
     guint8    *edid_data;
 
-    display_infos = g_new0 (gchar *, noutput + 1);
+    display_infos = g_array_new (FALSE, FALSE, sizeof(RLDisplayInfo*));
     /* get all display edids, to only query randr once */
     for (m = 0; m < noutput; ++m)
     {
         XfceRROutput *output;
+        MonitorInfo *info = NULL;
+        RLDisplayInfo *rlinfo = g_slice_new0 (RLDisplayInfo);
 
         output = g_ptr_array_index (outputs, m);
         edid_data = xfce_randr_read_edid_data (xdisplay, output->id);
 
-        if (edid_data)
-            display_infos[m] = g_compute_checksum_for_data (G_CHECKSUM_SHA1 , edid_data, 128);
+        if (edid_data) {
+            rlinfo->edid = g_compute_checksum_for_data (G_CHECKSUM_SHA1 , edid_data, 128);
+            info = decode_edid (edid_data);
+        }
         else
-            display_infos[m] = g_strdup ("");
+            rlinfo->edid = g_strdup ("");
+
+        if (info)
+            rlinfo->rlmodel = rl_make_rlmodel (info);
+        else
+            rlinfo->rlmodel = g_strdup ("");
+
+        g_array_append_val (display_infos, rlinfo);
     }
 
     return display_infos;
@@ -471,7 +483,7 @@ xfce_displays_helper_get_matching_profile (XfceDisplaysHelper *helper)
     gpointer           *profile;
     gchar              *profile_name;
     gchar              *property;
-    gchar             **display_infos;
+    GArray             *display_infos;
 
     display_infos = xfce_displays_helper_get_display_infos (helper->outputs->len,
                                                             helper->xdisplay,
@@ -479,7 +491,7 @@ xfce_displays_helper_get_matching_profile (XfceDisplaysHelper *helper)
     if (display_infos)
     {
         profiles = display_settings_get_profiles (display_infos, helper->channel);
-        g_strfreev (display_infos);
+        rl_display_infos_free (display_infos);
     }
 
     if (profiles == NULL)

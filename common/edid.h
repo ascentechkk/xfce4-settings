@@ -194,5 +194,6 @@ struct MonitorInfo
 
 MonitorInfo *decode_edid (const uchar *data);
 char *make_display_name (const MonitorInfo *info, guint output);
+char *rl_make_rlmodel (const MonitorInfo *info);
 
 #endif

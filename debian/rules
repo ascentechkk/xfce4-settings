@@ -15,6 +15,7 @@ override_dh_auto_configure:
 		--enable-sound-settings \
 		--enable-upower-glib \
 		--enable-xcursor \
+		--enable-maintainer-mode \
 		--with-helper-path-prefix=/usr/share
 
 override_dh_install:

@@ -24,10 +24,14 @@
 #include <string.h>
 #endif
 
+#include <syslog.h>
 #include <glib.h>
 
 #include "debug.h"
 
+
+
+static gboolean rl_log_target_syslog = FALSE;
 
 
 static const GDebugKey dbg_keys[] =
@@ -62,6 +66,10 @@ xfsettings_dbg_init (void)
             dbg_domains |= XFSD_DEBUG_YES;
         }
 
+        value = g_getenv ("LYNX_LOG_TARGET_SYSLOG");
+        if (value != NULL && *value != '\0')
+            rl_log_target_syslog = TRUE;
+
         inited = TRUE;
     }
 
@@ -92,7 +100,10 @@ xfsettings_dbg_print (XfsdDebugDomain  domain,
     g_assert (domain_name != NULL);
 
     string = g_strdup_vprintf (message, args);
-    g_printerr (PACKAGE_NAME "(%s): %s\n", domain_name, string);
+    if (rl_log_target_syslog)
+        syslog (LOG_INFO, "(%s): %s", domain_name, string);
+    else
+        g_printerr (PACKAGE_NAME "(%s): %s\n", domain_name, string);
     g_free (string);
 }
 

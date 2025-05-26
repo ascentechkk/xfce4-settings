@@ -457,11 +457,6 @@ mouse_settings_themes_populate_store (GtkBuilder *builder)
     store = gtk_list_store_new (N_THEME_COLUMNS, CAIRO_GOBJECT_TYPE_SURFACE, G_TYPE_STRING,
                                 G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING);
 
-    /* insert default */
-    gtk_list_store_insert_with_values (store, &iter, position++,
-                                       COLUMN_THEME_NAME, "default",
-                                       COLUMN_THEME_DISPLAY_NAME, _("Default"), -1);
-
     /* store the default path, so we always select a theme */
     active_path = gtk_tree_model_get_path (GTK_TREE_MODEL (store), &iter);
 
@@ -1112,6 +1107,14 @@ mouse_settings_synaptics_set_scrolling (GtkComboBox *combobox,
                                   G_TYPE_INT, &button_scroll,
                                   G_TYPE_INVALID);
         g_free (prop);
+
+#ifndef NO_RESALIO_LYNX
+        /* Set horizontal */
+        prop = g_strdup_printf ("/%s/Properties/%s", name, LIBINPUT_PROP_HORIZ_SCROLL_ENABLED);
+        g_strdelimit (prop, " ", '_');
+        xfconf_channel_set_int (pointers_channel, prop, (int) horizontal);
+        g_free (prop);
+#endif /* NO_RESALIO_LYNX*/
 #endif /* HAVE_LIBINPUT */
 
     }
@@ -1201,6 +1204,9 @@ mouse_settings_device_selection_changed (GtkBuilder *builder)
 #ifdef HAVE_LIBINPUT
     Atom               libinput_tap_prop;
     Atom               libinput_scroll_methods_prop;
+#ifndef NO_RESALIO_LYNX
+    Atom               libinput_hscroll_prop;
+#endif /* NO_RESALIO_LYNX */
 #endif /* HAVE_LIBINPUT */
     Atom               synaptics_prop;
     Atom               wacom_prop;
@@ -1213,11 +1219,15 @@ mouse_settings_device_selection_changed (GtkBuilder *builder)
     gint               is_enabled = -1;
     gint               synaptics_tap_to_click = -1;
     gint               synaptics_edge_scroll = -1;
-    gint               synaptics_edge_hscroll = -1;
     gint               synaptics_two_scroll = -1;
-    gint               synaptics_two_hscroll = -1;
     gint               synaptics_circ_scroll = -1;
     gint               synaptics_scroll_mode = 0;
+#ifdef NO_RESALIO_LYNX
+    gint               synaptics_edge_hscroll = -1;
+    gint               synaptics_two_hscroll = -1;
+#else
+    gint               libinput_hscroll = -1;
+#endif /* NO_RESALIO_LYNX */
     GtkTreeIter        iter;
     gint               wacom_rotation = -1;
     Atom              *props;
@@ -1331,6 +1341,9 @@ mouse_settings_device_selection_changed (GtkBuilder *builder)
         /* lininput properties */
         libinput_tap_prop = XInternAtom (xdisplay, LIBINPUT_PROP_TAP, True);
         libinput_scroll_methods_prop = XInternAtom (xdisplay, LIBINPUT_PROP_SCROLL_METHOD_ENABLED, True);
+#ifndef NO_RESALIO_LYNX
+        libinput_hscroll_prop = XInternAtom (xdisplay, LIBINPUT_PROP_HORIZ_SCROLL_ENABLED, True);
+#endif /* NO_RESALIO_LYNX */
 #endif /* HAVE_LIBINPUT */
         /* wacom and synaptics specific properties */
         device_enabled_prop = XInternAtom (xdisplay, "Device Enabled", True);
@@ -1357,10 +1370,12 @@ mouse_settings_device_selection_changed (GtkBuilder *builder)
                     is_wacom = TRUE;
                 else if (props[i] == synaptics_tap_prop)
                     synaptics_tap_to_click = mouse_settings_device_get_int_property (device, props[i], 4, NULL);
+#ifdef NO_RESALIO_LYNX
                 else if (props[i] == synaptics_edge_scroll_prop)
                     synaptics_edge_scroll = mouse_settings_device_get_int_property (device, props[i], 0, &synaptics_edge_hscroll);
                 else if (props[i] == synaptics_two_scroll_prop)
                     synaptics_two_scroll = mouse_settings_device_get_int_property (device, props[i], 0, &synaptics_two_hscroll);
+#endif /* NO_RESALIO_LYNX */
                 else if (props[i] == synaptics_circ_scroll_prop)
                     synaptics_circ_scroll = mouse_settings_device_get_int_property (device, props[i], 0, NULL);
                 else if (props[i] == wacom_rotation_prop)
@@ -1399,6 +1414,12 @@ mouse_settings_device_selection_changed (GtkBuilder *builder)
                             synaptics_edge_scroll = -1;
                     }
                 }
+#ifndef NO_RESALIO_LYNX
+                else if (props[i] == libinput_hscroll_prop)
+                {
+                    mouse_settings_get_libinput_boolean (xdisplay, device, LIBINPUT_PROP_HORIZ_SCROLL_ENABLED, &libinput_hscroll);
+                }
+#endif /* NO_RESALIO_LYNX */
 #endif /* HAVE_LIBINPUT */
             }
 
@@ -1441,10 +1462,10 @@ mouse_settings_device_selection_changed (GtkBuilder *builder)
     gtk_widget_set_visible (GTK_WIDGET (object), FALSE);
 #endif
 
-#ifdef HAVE_LIBINPUT
+#if defined (HAVE_LIBINPUT) && defined (NO_RESALIO_LYNX)
     object = gtk_builder_get_object (builder, "device-reset-feedback");
     gtk_widget_set_visible (GTK_WIDGET (object), !is_libinput);
-#endif /* HAVE_LIBINPUT */
+#endif /* HAVE_LIBINPUT && NO_RESALIO_LYNX */
 
     /* synaptics options */
     object = gtk_builder_get_object (builder, "synaptics-tab");
@@ -1488,10 +1509,16 @@ mouse_settings_device_selection_changed (GtkBuilder *builder)
 
         object = gtk_builder_get_object (builder, "synaptics-scroll-horiz");
         mouse_settings_synaptics_hscroll_sensitive (builder);
+#ifdef NO_RESALIO_LYNX
         gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (object),
                                       synaptics_edge_hscroll == 1 || synaptics_two_hscroll == 1);
+#endif /* NO_RESALIO_LYNX */
 #ifdef HAVE_LIBINPUT
+#ifdef NO_RESALIO_LYNX
         gtk_widget_set_visible (GTK_WIDGET (object), !is_libinput);
+#else
+        gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (object), libinput_hscroll > 0);
+#endif /* NO_RESALIO_LYNX */
 
         object = gtk_builder_get_object (builder, "synaptics-disable-while-type");
         gtk_widget_set_visible (GTK_WIDGET (object), !is_libinput);
@@ -1782,10 +1809,12 @@ mouse_settings_device_reset (GtkWidget  *button,
             /* make the button insensitive */
             gtk_widget_set_sensitive (button, FALSE);
 
+#ifdef NO_RESALIO_LYNX
             /* set the threshold to -1 */
             property_name = g_strdup_printf ("/%s/Threshold", name);
             xfconf_channel_set_int (pointers_channel, property_name, -1);
             g_free (property_name);
+#endif /* NO_RESALIO_LYNX */
 
             /* set the acceleration to -1 */
             property_name = g_strdup_printf ("/%s/Acceleration", name);
@@ -1870,11 +1899,11 @@ main (gint argc, gchar **argv)
     GError            *error = NULL;
     GObject           *object;
     XExtensionVersion *version = NULL;
-#ifdef DEVICE_PROPERTIES
+#if defined (DEVICE_PROPERTIES) && defined (NO_RESALIO_LYNX)
     gchar             *syndaemon;
     GObject           *synaptics_disable_while_type;
     GObject           *synaptics_disable_duration_table;
-#endif
+#endif /* DEVICE_PROPERTIES && NO_RESALIO_LYNX */
 
     /* setup translation domain */
     xfce_textdomain (GETTEXT_PACKAGE, LOCALEDIR, "UTF-8");
@@ -2006,6 +2035,7 @@ main (gint argc, gchar **argv)
                               G_CALLBACK (mouse_settings_device_reset), builder);
 
 #if defined (DEVICE_PROPERTIES) || defined (HAVE_LIBINPUT)
+#ifdef NO_RESALIO_LYNX
             synaptics_disable_while_type = gtk_builder_get_object (builder, "synaptics-disable-while-type");
             syndaemon = g_find_program_in_path ("syndaemon");
             gtk_widget_set_sensitive (GTK_WIDGET (object), syndaemon != NULL);
@@ -2026,6 +2056,7 @@ main (gint argc, gchar **argv)
             object = gtk_builder_get_object (builder, "synaptics-disable-duration");
             xfconf_g_property_bind (pointers_channel, "/DisableTouchpadDuration",
                                     G_TYPE_DOUBLE, G_OBJECT (object), "value");
+#endif /* NO_RESALIO_LYNX */
 
             object = gtk_builder_get_object (builder, "synaptics-tap-to-click");
             g_signal_connect_swapped (G_OBJECT (object), "toggled",

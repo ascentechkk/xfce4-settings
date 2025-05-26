@@ -155,7 +155,7 @@
             <child>
               <object class="GtkButton" id="button2">
                 <property name="label" translatable="yes">_Help</property>
-                <property name="visible">True</property>
+                <property name="visible">False</property>
                 <property name="can_focus">True</property>
                 <property name="receives_default">True</property>
                 <property name="image">image2</property>
@@ -638,42 +638,51 @@
                                     <property name="orientation">vertical</property>
                                     <property name="spacing">6</property>
                                     <child>
-                                      <object class="GtkBox" id="hbox4">
+                                      <object class="GtkAlignment" id="alignmentRL1">
                                         <property name="visible">True</property>
                                         <property name="can_focus">False</property>
-                                        <property name="spacing">12</property>
+                                        <property name="top_padding">5</property>
+                                        <property name="bottom_padding">5</property>
                                         <child>
-                                          <object class="GtkLabel" id="label23">
+                                          <object class="GtkHBox" id="hbox4">
                                             <property name="visible">True</property>
                                             <property name="can_focus">False</property>
-                                            <property name="label" translatable="yes">Scrolling _mode:</property>
-                                            <property name="use_underline">True</property>
-                                            <property name="mnemonic_widget">synaptics-scroll</property>
-                                          </object>
-                                          <packing>
-                                            <property name="expand">False</property>
-                                            <property name="fill">True</property>
-                                            <property name="position">0</property>
-                                          </packing>
-                                        </child>
-                                        <child>
-                                          <object class="GtkComboBox" id="synaptics-scroll">
-                                            <property name="visible">True</property>
-                                            <property name="can_focus">False</property>
-                                            <property name="model">synaptics-scroll-store</property>
+                                            <property name="spacing">12</property>
                                             <child>
-                                              <object class="GtkCellRendererText" id="cellrenderertext3"/>
-                                              <attributes>
-                                                <attribute name="sensitive">1</attribute>
-                                                <attribute name="text">0</attribute>
-                                              </attributes>
+                                              <object class="GtkLabel" id="label23">
+                                                <property name="visible">True</property>
+                                                <property name="can_focus">False</property>
+                                                <property name="xalign">0</property>
+                                                <property name="label" translatable="yes">Scrolling _mode:</property>
+                                                <property name="use_underline">True</property>
+                                                <property name="mnemonic_widget">synaptics-scroll</property>
+                                              </object>
+                                              <packing>
+                                                <property name="expand">False</property>
+                                                <property name="fill">True</property>
+                                                <property name="position">0</property>
+                                              </packing>
+                                            </child>
+                                            <child>
+                                              <object class="GtkComboBox" id="synaptics-scroll">
+                                                <property name="visible">True</property>
+                                                <property name="can_focus">False</property>
+                                                <property name="model">synaptics-scroll-store</property>
+                                                <child>
+                                                  <object class="GtkCellRendererText" id="cellrenderertext3"/>
+                                                  <attributes>
+                                                    <attribute name="sensitive">1</attribute>
+                                                    <attribute name="text">0</attribute>
+                                                  </attributes>
+                                                </child>
+                                              </object>
+                                              <packing>
+                                                <property name="expand">True</property>
+                                                <property name="fill">True</property>
+                                                <property name="position">1</property>
+                                              </packing>
                                             </child>
                                           </object>
-                                          <packing>
-                                            <property name="expand">True</property>
-                                            <property name="fill">True</property>
-                                            <property name="position">1</property>
-                                          </packing>
                                         </child>
                                       </object>
                                       <packing>
@@ -683,14 +692,22 @@
                                       </packing>
                                     </child>
                                     <child>
-                                      <object class="GtkCheckButton" id="synaptics-scroll-horiz">
-                                        <property name="label" translatable="yes">Enable hori_zontal scrolling</property>
+                                      <object class="GtkAlignment" id="alignmentRL2">
                                         <property name="visible">True</property>
-                                        <property name="can_focus">True</property>
-                                        <property name="receives_default">False</property>
-                                        <property name="halign">start</property>
-                                        <property name="use_underline">True</property>
-                                        <property name="draw_indicator">True</property>
+                                        <property name="can_focus">False</property>
+                                        <property name="top_padding">5</property>
+                                        <property name="bottom_padding">5</property>
+                                        <child>
+                                          <object class="GtkCheckButton" id="synaptics-scroll-horiz">
+                                            <property name="label" translatable="yes">Enable hori_zontal scrolling</property>
+                                            <property name="use_action_appearance">False</property>
+                                            <property name="visible">True</property>
+                                            <property name="can_focus">True</property>
+                                            <property name="receives_default">False</property>
+                                            <property name="use_underline">True</property>
+                                            <property name="draw_indicator">True</property>
+                                          </object>
+                                        </child>
                                       </object>
                                       <packing>
                                         <property name="expand">True</property>

@@ -22,7 +22,15 @@
 #include "xfce-randr.h"
 
 
+typedef struct {
+    gchar   *edid;
+    gchar   *rlmodel;
+} RLDisplayInfo;
+
 gboolean display_settings_profile_name_exists   (XfconfChannel  *channel,
                                                  const gchar    *new_profile_name);
-GList*   display_settings_get_profiles          (gchar         **display_infos,
+GList*   display_settings_get_profiles          (GArray         *display_infos,
                                                  XfconfChannel  *channel);
+
+void rl_display_infos_free (GArray *display_infos);
+

@@ -29,6 +29,7 @@
 #endif
 
 #include <math.h>
+#include <syslog.h>
 
 #include <glib.h>
 #include <gtk/gtk.h>
@@ -1427,7 +1428,11 @@ display_setting_primary_populate (GtkBuilder *builder)
     /* If there's only one display we hide the primary option as it is meaningless */
     gtk_widget_set_visible (GTK_WIDGET (check), multiple_displays);
     gtk_widget_set_visible (GTK_WIDGET (label), multiple_displays);
+#ifdef NO_RESALIO_LYNX
     gtk_widget_set_visible (GTK_WIDGET (primary_info), multiple_displays);
+#else
+    gtk_widget_set_visible (GTK_WIDGET (primary_info), FALSE);
+#endif
     gtk_widget_set_visible (GTK_WIDGET (primary_indicator), multiple_displays);
     if (!multiple_displays)
         return;
@@ -1553,17 +1558,20 @@ display_settings_combobox_selection_changed (GtkComboBox *combobox,
     }
 }
 
-static gchar **
+static GArray *
 display_settings_get_display_infos (void)
 {
-    gchar   **display_infos;
+    GArray   *display_infos;
     guint     m;
 
-    display_infos = g_new0 (gchar *, xfce_randr->noutput + 1);
+    display_infos = g_array_new (FALSE, FALSE, sizeof(RLDisplayInfo*));
     /* get all display edids, to only query randr once */
     for (m = 0; m < xfce_randr->noutput; ++m)
     {
-        display_infos[m] = g_strdup_printf ("%s", xfce_randr_get_edid (xfce_randr, m));
+        RLDisplayInfo *rlinfo = g_slice_new0(RLDisplayInfo);
+        rlinfo->edid = g_strdup_printf ("%s", xfce_randr_get_edid (xfce_randr, m));
+        rlinfo->rlmodel = g_strdup_printf ("%s", rl_xfce_randr_get_rlmodel (xfce_randr, m));
+        g_array_append_val (display_infos, rlinfo);
     }
 
     return display_infos;
@@ -1575,14 +1583,14 @@ display_settings_minimal_profile_populate (GtkBuilder *builder)
     GObject  *profile_box, *profile_display1;
     GList    *profiles = NULL;
     GList    *current;
-    gchar   **display_infos;
+    GArray   *display_infos;
 
     profile_box  = gtk_builder_get_object (builder, "profile-box");
     profile_display1  = gtk_builder_get_object (builder, "display1");
 
     display_infos = display_settings_get_display_infos ();
     profiles = display_settings_get_profiles (display_infos, display_channel);
-    g_strfreev (display_infos);
+    rl_display_infos_free (display_infos);
 
     current = g_list_first (profiles);
     while (current)
@@ -1670,7 +1678,7 @@ display_settings_profile_list_populate (GtkBuilder *builder)
     GtkTreeIter       iter;
     GList            *profiles = NULL;
     GList            *current;
-    gchar           **display_infos;
+    GArray           *display_infos;
 
     /* create a new list store */
     store = gtk_list_store_new (N_COLUMNS,
@@ -1684,7 +1692,7 @@ display_settings_profile_list_populate (GtkBuilder *builder)
 
     display_infos = display_settings_get_display_infos ();
     profiles = display_settings_get_profiles (display_infos, display_channel);
-    g_strfreev (display_infos);
+    rl_display_infos_free (display_infos);
 
     /* Populate treeview */
     current = g_list_first (profiles);
@@ -1990,6 +1998,8 @@ display_settings_profile_save (GtkWidget *widget, GtkBuilder *builder)
         display_settings_profile_list_populate (builder);
         gtk_widget_set_sensitive (widget, FALSE);
 
+        syslog (LOG_INFO, "overwrite profile: %s (%s)", profile_name, profile_hash);
+
         g_free (property);
         g_free (profile_hash);
         g_free (profile_name);
@@ -2054,6 +2064,8 @@ display_settings_profile_create_cb (GtkWidget *widget, GtkBuilder *builder)
         xfconf_channel_set_string (display_channel, "/ActiveProfile", profile_hash);
         display_settings_profile_list_populate (builder);
 
+        syslog (LOG_INFO, "create profile: %s (%s)", profile_name, profile_hash);
+
         g_free (property);
         g_free (profile_hash);
     }
@@ -2102,12 +2114,24 @@ display_settings_profile_apply (GtkWidget *widget, GtkBuilder *builder)
         xfce_randr_apply (xfce_randr, profile_hash, display_channel);
         xfconf_channel_set_string (display_channel, "/ActiveProfile", profile_hash);
 
+        syslog (LOG_INFO, "apply profile: %s", profile_hash);
+
+        if (g_strcmp0 (old_profile_hash, "Default") == 0)
+        {
+            display_settings_profile_list_populate (builder);
+
+            g_free (profile_hash);
+            return;
+        }
+
         if (!display_setting_timed_confirmation (builder))
         {
             xfce_randr_apply (xfce_randr, old_profile_hash, display_channel);
             xfconf_channel_set_string (display_channel, "/ActiveProfile", old_profile_hash);
 
             foo_scroll_area_invalidate (FOO_SCROLL_AREA (randr_gui_area));
+
+            syslog (LOG_INFO, "apply profile: %s", old_profile_hash);
         }
         display_settings_profile_list_populate (builder);
 
@@ -2166,6 +2190,9 @@ display_settings_profile_delete (GtkWidget *widget, GtkBuilder *builder)
             xfconf_channel_reset_property (display_channel, property->str, True);
             xfconf_channel_set_string (display_channel, "/ActiveProfile", "Default");
             display_settings_profile_list_populate (builder);
+
+            syslog (LOG_INFO, "remove profile: %s (%s)", profile_name, profile_hash);
+
             g_free (profile_name);
         }
         else
@@ -2388,6 +2415,10 @@ display_settings_dialog_new (GtkBuilder *builder)
     apply_button = GTK_WIDGET (gtk_builder_get_object (builder, "apply"));
     g_signal_connect (G_OBJECT (apply_button), "clicked", G_CALLBACK (display_setting_apply), builder);
     gtk_widget_set_sensitive (apply_button, FALSE);
+
+    check = gtk_builder_get_object (builder, "rlmodel-enable");
+    xfconf_g_property_bind (display_channel, "/RLModelEnabled", G_TYPE_BOOLEAN, check,
+                            "active");
 
     check = gtk_builder_get_object (builder, "auto-enable-profiles");
     xfconf_g_property_bind (display_channel, "/AutoEnableProfiles", G_TYPE_BOOLEAN, check,
@@ -4412,6 +4443,8 @@ main (gint argc, gchar **argv)
     display_channel = xfconf_channel_new ("displays");
     if (G_LIKELY (display_channel))
     {
+        openlog ("xfce4-display-settings", LOG_PID, LOG_USER);
+
         /* Create a new xfce randr (>= 1.2) for this display
          * this will only work if there is 1 screen on this display
          * As GTK 3.10, the number of screens is always 1 */
@@ -4467,6 +4500,8 @@ main (gint argc, gchar **argv)
 cleanup:
         /* Release the channel */
         g_object_unref (G_OBJECT (display_channel));
+
+        closelog ();
     }
 
     /* Free the randr 1.2 backend */
