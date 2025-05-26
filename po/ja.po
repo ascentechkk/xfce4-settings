@@ -1037,8 +1037,8 @@ msgid "Delete the currently selected display profile."
 msgstr "現在接続されているディスプレイプロファイルを削除します。"
 
 #: ../rlmodel-enable label
-msgid "Share profiles across the same display product"
-msgstr "同じディスプレイ製品でプロファイルを共有する"
+msgid "Share settings across the same display product"
+msgstr "同じディスプレイ製品で設定を共有する"
 
 #: ../dialogs/display-settings/display-dialog.glade.h:32
 msgid "Apply"
@@ -1088,6 +1088,10 @@ msgstr "作成"
 #: ../dialogs/display-settings/display-dialog.glade.h:43
 msgid "A profile of this name already exists."
 msgstr "この名前のプロファイルはすでに存在しています。"
+
+#: ../dialogs/display-settings/display-dialog.glade.h:43
+msgid "Display - Advanced Settings"
+msgstr "ディスプレイ - 詳細設定"
 
 #: ../dialogs/display-settings/minimal-display-dialog.glade.h:1
 msgid "Displays"

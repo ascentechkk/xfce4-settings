@@ -225,9 +225,6 @@ static gboolean display_setting_primary_toggled              (GtkWidget       *w
 
 static void display_setting_mirror_displays_populate         (GtkBuilder *builder);
 
-static void display_settings_profile_apply                   (GtkWidget       *widget,
-                                                              GtkBuilder      *builder);
-
 static void display_settings_minimal_profile_apply           (GtkToggleButton *widget,
                                                               GtkBuilder      *builder);
 
@@ -1410,7 +1407,7 @@ display_setting_primary_toggled (GtkWidget *widget,
 static void
 display_setting_primary_populate (GtkBuilder *builder)
 {
-    GObject *check, *label, *primary_indicator, *primary_info;
+    GObject *check, *label, *primary_indicator;
     gboolean output_on = TRUE;
     gboolean multiple_displays = TRUE;
     gboolean primary;
@@ -1422,17 +1419,11 @@ display_setting_primary_populate (GtkBuilder *builder)
         multiple_displays = FALSE;
     check = gtk_builder_get_object (builder, "primary");
     label = gtk_builder_get_object (builder, "label-primary");
-    primary_info = gtk_builder_get_object (builder, "primary-info-button");
     primary_indicator = gtk_builder_get_object (builder, "primary-indicator");
 
     /* If there's only one display we hide the primary option as it is meaningless */
     gtk_widget_set_visible (GTK_WIDGET (check), multiple_displays);
     gtk_widget_set_visible (GTK_WIDGET (label), multiple_displays);
-#ifdef NO_RESALIO_LYNX
-    gtk_widget_set_visible (GTK_WIDGET (primary_info), multiple_displays);
-#else
-    gtk_widget_set_visible (GTK_WIDGET (primary_info), FALSE);
-#endif
     gtk_widget_set_visible (GTK_WIDGET (primary_indicator), multiple_displays);
     if (!multiple_displays)
         return;
@@ -1578,110 +1569,6 @@ display_settings_get_display_infos (void)
 }
 
 static void
-display_settings_profile_list_init (GtkBuilder *builder)
-{
-    GtkListStore      *store;
-    GObject           *treeview;
-    GtkCellRenderer   *renderer;
-    GtkTreeViewColumn *column;
-
-    store = gtk_list_store_new (N_COLUMNS,
-                                G_TYPE_ICON,
-                                G_TYPE_STRING,
-                                G_TYPE_STRING);
-
-    treeview = gtk_builder_get_object (builder, "randr-profile");
-    gtk_tree_view_set_model (GTK_TREE_VIEW (treeview), GTK_TREE_MODEL (store));
-    /* Setup Profile name column */
-    column = gtk_tree_view_column_new ();
-    renderer = gtk_cell_renderer_pixbuf_new ();
-    gtk_tree_view_column_pack_start (column, renderer, TRUE);
-    gtk_tree_view_column_set_attributes (column, renderer, "gicon", COLUMN_ICON, NULL);
-    gtk_tree_view_append_column (GTK_TREE_VIEW (treeview), column);
-    /* Setup Profile name column */
-    column = gtk_tree_view_column_new ();
-    gtk_tree_view_column_set_title (column, _("Profiles matching the currently connected displays"));
-    renderer = gtk_cell_renderer_text_new ();
-    gtk_tree_view_column_pack_start (column, renderer, TRUE);
-    gtk_tree_view_column_set_attributes (column, renderer, "text", COLUMN_NAME, NULL);
-    g_object_set (G_OBJECT (renderer), "ellipsize", PANGO_ELLIPSIZE_END, NULL);
-    gtk_tree_view_append_column (GTK_TREE_VIEW (treeview), column);
-    /* Setup Profile hash column */
-    column = gtk_tree_view_column_new ();
-    renderer = gtk_cell_renderer_text_new ();
-    gtk_tree_view_column_pack_start (column, renderer, TRUE);
-    gtk_tree_view_column_set_attributes (column, renderer, "text", COLUMN_HASH, NULL);
-    gtk_tree_view_column_set_visible (column, FALSE);
-    gtk_tree_view_append_column (GTK_TREE_VIEW (treeview), column);
-
-    g_object_unref (G_OBJECT (store));
-}
-
-static void
-display_settings_profile_list_populate (GtkBuilder *builder)
-{
-    GtkListStore     *store;
-    GObject          *treeview;
-    GtkTreeIter       iter;
-    GList            *profiles = NULL;
-    GList            *current;
-    GArray           *display_infos;
-
-    /* create a new list store */
-    store = gtk_list_store_new (N_COLUMNS,
-                                G_TYPE_ICON,
-                                G_TYPE_STRING,
-                                G_TYPE_STRING);
-
-    /* set up the new combobox which will replace the above combobox */
-    treeview = gtk_builder_get_object (builder, "randr-profile");
-    gtk_tree_view_set_model (GTK_TREE_VIEW (treeview), GTK_TREE_MODEL (store));
-
-    display_infos = display_settings_get_display_infos ();
-    profiles = display_settings_get_profiles (display_infos, display_channel);
-    rl_display_infos_free (display_infos);
-
-    /* Populate treeview */
-    current = g_list_first (profiles);
-    while (current)
-    {
-        gchar *property;
-        gchar *profile_name;
-        gchar *active_profile_hash;
-        GIcon *icon = NULL;
-
-        /* use the display string value of the profile hash property */
-        property = g_strdup_printf ("/%s", (gchar *)current->data);
-        profile_name = xfconf_channel_get_string (display_channel, property, NULL);
-        active_profile_hash = xfconf_channel_get_string (display_channel, "/ActiveProfile", "Default");
-
-        /* highlight the currently active profile */
-        if (g_strcmp0 ((gchar *)current->data, active_profile_hash) == 0)
-        {
-            icon = g_themed_icon_new_with_default_fallbacks ("object-select-symbolic");
-        }
-
-        gtk_list_store_append (store, &iter);
-        gtk_list_store_set (store, &iter,
-                            COLUMN_ICON, icon,
-                            COLUMN_NAME, profile_name,
-                            COLUMN_HASH, (gchar *)current->data,
-                            -1);
-
-        current = g_list_next (current);
-        g_free (property);
-        g_free (profile_name);
-        g_free (active_profile_hash);
-        if (icon)
-            g_object_unref (icon);
-    }
-
-    /* Release the store */
-    g_list_free (profiles);
-    g_object_unref (G_OBJECT (store));
-}
-
-static void
 display_settings_combobox_populate (GtkBuilder *builder)
 {
     guint             m;
@@ -1772,10 +1659,7 @@ display_settings_dialog_response (GtkDialog  *dialog,
                                   gint        response_id,
                                   GtkBuilder *builder)
 {
-    if (response_id == GTK_RESPONSE_HELP)
-        xfce_dialog_show_help_with_version (GTK_WINDOW (dialog), "xfce4-settings", "display",
-                                            NULL, XFCE4_SETTINGS_VERSION_SHORT);
-    else if (response_id == GTK_RESPONSE_CLOSE)
+    if (response_id == GTK_RESPONSE_CLOSE)
     {
         gchar *new_active_profile = xfconf_channel_get_string (display_channel, "/ActiveProfile", NULL);
         gchar *property = g_strdup_printf ("/%s", active_profile);
@@ -1888,285 +1772,12 @@ display_setting_apply (GtkWidget *widget, GtkBuilder *builder)
 }
 
 static void
-display_settings_profile_changed (GtkTreeSelection *selection, GtkBuilder *builder)
-{
-    GObject *button;
-    GtkTreeModel      *model;
-    GtkTreeIter        iter;
-    gboolean selected;
-
-    selected = gtk_tree_selection_get_selected (selection, &model, &iter);
-
-    button = gtk_builder_get_object (builder, "button-profile-save");
-    gtk_widget_set_sensitive (GTK_WIDGET (button), selected);
-    button = gtk_builder_get_object (builder, "button-profile-delete");
-    gtk_widget_set_sensitive (GTK_WIDGET (button), selected);
-    button = gtk_builder_get_object (builder, "button-profile-apply");
-    gtk_widget_set_sensitive (GTK_WIDGET (button), selected);
-}
-
-static void
 display_settings_minimal_profile_apply (GtkToggleButton *widget, GtkBuilder *builder)
 {
     gchar  *profile_hash;
 
     profile_hash = (gchar *) g_object_get_data (G_OBJECT (widget), "profile");
     xfce_randr_apply (xfce_randr, profile_hash, display_channel);
-}
-
-static void
-display_settings_profile_save (GtkWidget *widget, GtkBuilder *builder)
-{
-    GObject           *treeview;
-    GtkTreeSelection  *selection;
-    GtkTreeModel      *model;
-    GtkTreeIter        iter;
-
-    treeview = gtk_builder_get_object (builder, "randr-profile");
-    selection = gtk_tree_view_get_selection (GTK_TREE_VIEW (treeview));
-
-    if (gtk_tree_selection_get_selected (selection, &model, &iter))
-    {
-        guint i = 0;
-        gchar *property;
-        gchar *profile_hash;
-        gchar *profile_name;
-
-        gtk_tree_model_get (model, &iter, COLUMN_NAME, &profile_name, COLUMN_HASH, &profile_hash, -1);
-        property = g_strdup_printf ("/%s", profile_hash);
-
-        for (i = 0; i < xfce_randr->noutput; i++)
-            xfce_randr_save_output (xfce_randr, profile_hash, display_channel, i);
-
-        /* save the human-readable name of the profile as string value */
-        xfconf_channel_set_string (display_channel, property, profile_name);
-        xfconf_channel_set_string (display_channel, "/ActiveProfile", profile_hash);
-
-        display_settings_profile_list_populate (builder);
-        gtk_widget_set_sensitive (widget, FALSE);
-
-        syslog (LOG_INFO, "overwrite profile: %s (%s)", profile_name, profile_hash);
-
-        g_free (property);
-        g_free (profile_hash);
-        g_free (profile_name);
-    }
-    else
-        gtk_widget_set_sensitive (widget, TRUE);
-}
-
-/* reset the widget states if the user starts editing the profile name */
-static void
-display_settings_profile_entry_text_changed (GtkEditable *entry,
-                                             GtkBuilder  *builder)
-{
-    GObject *infobar, *button;
-
-    button = gtk_builder_get_object (builder, "button-profile-create-cb");
-    infobar = gtk_builder_get_object (builder, "profile-exists");
-
-    gtk_style_context_remove_class (gtk_widget_get_style_context (GTK_WIDGET (entry)), "error");
-    gtk_widget_set_sensitive (GTK_WIDGET (button), TRUE);
-    gtk_widget_hide (GTK_WIDGET (infobar));
-}
-
-static void
-display_settings_profile_create_cb (GtkWidget *widget, GtkBuilder *builder)
-{
-    const gchar *profile_name;
-    GtkWidget *popover;
-    GObject *infobar, *entry, *button;
-
-    entry = gtk_builder_get_object (builder, "entry-profile-create");
-    profile_name = gtk_entry_get_text (GTK_ENTRY (entry));
-
-    /* check if the profile name is already taken */
-    if (!display_settings_profile_name_exists (display_channel, profile_name))
-    {
-        button = gtk_builder_get_object (builder, "button-profile-create-cb");
-        infobar = gtk_builder_get_object (builder, "profile-exists");
-
-        gtk_style_context_add_class (gtk_widget_get_style_context (GTK_WIDGET (entry)), "error");
-        gtk_widget_set_sensitive (GTK_WIDGET (button), FALSE);
-        gtk_widget_show_all (GTK_WIDGET (infobar));
-
-        g_signal_connect (G_OBJECT (entry), "changed",
-                          G_CALLBACK (display_settings_profile_entry_text_changed), builder);
-        return;
-    }
-
-    if (profile_name)
-    {
-        guint i = 0;
-        gchar *property;
-        gchar *profile_hash;
-
-        profile_hash = g_compute_checksum_for_string (G_CHECKSUM_SHA1, profile_name, strlen(profile_name));
-        property = g_strdup_printf ("/%s", profile_hash);
-        for (i = 0; i < xfce_randr->noutput; i++)
-            xfce_randr_save_output (xfce_randr, profile_hash, display_channel, i);
-
-        /* save the human-readable name of the profile as string value */
-        xfconf_channel_set_string (display_channel, property, profile_name);
-        xfconf_channel_set_string (display_channel, "/ActiveProfile", profile_hash);
-        display_settings_profile_list_populate (builder);
-
-        syslog (LOG_INFO, "create profile: %s (%s)", profile_name, profile_hash);
-
-        g_free (property);
-        g_free (profile_hash);
-    }
-    popover = gtk_widget_get_ancestor (widget, GTK_TYPE_POPOVER);
-    if (popover)
-        gtk_popover_popdown (GTK_POPOVER (popover));
-}
-
-static void
-display_settings_profile_create (GtkWidget *widget, GtkBuilder *builder)
-{
-    GObject *popover, *entry, *button, *infobar;
-
-    /* Create a popover dialog for saving a new profile */
-    popover = gtk_builder_get_object (builder, "popover-create-profile");
-    entry = gtk_builder_get_object (builder, "entry-profile-create");
-    button = gtk_builder_get_object (builder, "button-profile-create-cb");
-    infobar = gtk_builder_get_object (builder, "profile-exists");
-
-    gtk_widget_show (GTK_WIDGET (popover));
-    gtk_widget_hide (GTK_WIDGET (infobar));
-    gtk_widget_grab_focus (GTK_WIDGET (entry));
-    gtk_widget_grab_default (GTK_WIDGET (button));
-
-    g_signal_connect (button, "clicked", G_CALLBACK (display_settings_profile_create_cb), builder);
-}
-
-static void
-display_settings_profile_apply (GtkWidget *widget, GtkBuilder *builder)
-{
-    GObject           *treeview;
-    GtkTreeSelection  *selection;
-    GtkTreeModel      *model;
-    GtkTreeIter        iter;
-
-    treeview = gtk_builder_get_object (builder, "randr-profile");
-    selection = gtk_tree_view_get_selection (GTK_TREE_VIEW (treeview));
-
-    if (gtk_tree_selection_get_selected (selection, &model, &iter))
-    {
-        gchar *profile_hash;
-        gchar *old_profile_hash;
-
-        old_profile_hash = xfconf_channel_get_string (display_channel, "/ActiveProfile", "Default");
-        gtk_tree_model_get (model, &iter, COLUMN_HASH, &profile_hash, -1);
-        xfce_randr_apply (xfce_randr, profile_hash, display_channel);
-        xfconf_channel_set_string (display_channel, "/ActiveProfile", profile_hash);
-
-        syslog (LOG_INFO, "apply profile: %s", profile_hash);
-
-        if (g_strcmp0 (old_profile_hash, "Default") == 0)
-        {
-            display_settings_profile_list_populate (builder);
-
-            g_free (profile_hash);
-            return;
-        }
-
-        if (!display_setting_timed_confirmation (builder))
-        {
-            xfce_randr_apply (xfce_randr, old_profile_hash, display_channel);
-            xfconf_channel_set_string (display_channel, "/ActiveProfile", old_profile_hash);
-
-            foo_scroll_area_invalidate (FOO_SCROLL_AREA (randr_gui_area));
-
-            syslog (LOG_INFO, "apply profile: %s", old_profile_hash);
-        }
-        display_settings_profile_list_populate (builder);
-
-        g_free (profile_hash);
-    }
-}
-
-static void
-display_settings_profile_row_activated (GtkTreeView       *tree_view,
-                                        GtkTreePath       *path,
-                                        GtkTreeViewColumn *column,
-                                        gpointer           user_data)
-{
-    GtkBuilder *builder = user_data;
-    display_settings_profile_apply (NULL, builder);
-}
-
-static void
-display_settings_profile_delete (GtkWidget *widget, GtkBuilder *builder)
-{
-    GObject           *treeview;
-    GtkTreeSelection  *selection;
-    GtkTreeModel      *model;
-    GtkTreeIter        iter;
-
-    treeview = gtk_builder_get_object (builder, "randr-profile");
-    selection = gtk_tree_view_get_selection (GTK_TREE_VIEW (treeview));
-
-    if (gtk_tree_selection_get_selected (selection, &model, &iter))
-    {
-        gchar *profile_name;
-        gchar *profile_hash;
-        gint   response;
-        gchar *primary_message;
-
-        gtk_tree_model_get (model, &iter, COLUMN_NAME, &profile_name, COLUMN_HASH, &profile_hash, -1);
-        primary_message = g_strdup_printf (_("Do you want to delete the display profile '%s'?"), profile_name);
-
-        response = xfce_message_dialog (NULL, _("Delete Profile"),
-                                        "user-trash",
-                                        primary_message,
-                                        _("Once a display profile is deleted it cannot be restored."),
-                                        _("Cancel"), GTK_RESPONSE_NO,
-                                        _("Delete"), GTK_RESPONSE_YES,
-                                        NULL);
-
-        g_free (primary_message);
-
-        if (response == GTK_RESPONSE_YES)
-        {
-            GString *property;
-
-            property = g_string_new (profile_hash);
-            g_string_prepend_c (property, '/');
-
-            xfconf_channel_reset_property (display_channel, property->str, True);
-            xfconf_channel_set_string (display_channel, "/ActiveProfile", "Default");
-            display_settings_profile_list_populate (builder);
-
-            syslog (LOG_INFO, "remove profile: %s (%s)", profile_name, profile_hash);
-
-            g_free (profile_name);
-        }
-        else
-        {
-            g_free (profile_name);
-            return;
-        }
-    }
-}
-
-static void
-display_setting_minimal_autoconnect_mode_changed (GtkComboBox *combobox,
-                                                  GtkBuilder  *builder)
-{
-    gint value;
-    gboolean state = TRUE;
-    GObject *auto_enable_profiles;
-
-    value = gtk_combo_box_get_active (combobox);
-    /* On "Do nothing" disable the "auto-enable-profiles" option */
-    if (value == 0)
-      state = FALSE;
-
-    auto_enable_profiles = gtk_builder_get_object (builder, "auto-enable-profiles");
-    gtk_widget_set_sensitive (GTK_WIDGET (auto_enable_profiles), state);
-    auto_enable_profiles = gtk_builder_get_object (builder, "auto-enable-profiles-label");
-    gtk_widget_set_sensitive (GTK_WIDGET (auto_enable_profiles), state);
 }
 
 static void
@@ -2190,70 +1801,6 @@ display_settings_launch_settings_dialogs (GtkButton *button,
         g_warning ("Could not launch the application %s", error->message);
     if (error != NULL)
         g_error_free (error);
-}
-
-static void
-display_settings_primary_status_info_populate (GtkBuilder *builder)
-{
-    GObject          *widget;
-    GtkWidget        *image;
-    XfconfChannel    *channel;
-    gchar            *primary_status_panel;
-    gint              primary_status;
-    gint              panels = 0;
-    gint              panels_with_primary = 0;
-    gchar            *property;
-
-    widget = gtk_builder_get_object (builder, "primary-info-button");
-    image = gtk_image_new_from_icon_name ("dialog-information", GTK_ICON_SIZE_BUTTON);
-    gtk_container_add (GTK_CONTAINER (widget), image);
-    gtk_widget_show (image);
-
-    channel = xfconf_channel_new ("xfce4-panel");
-    widget = gtk_builder_get_object (builder, "panel-ok");
-    property = g_strdup_printf ("/panels/panel-%u/output-name", panels);
-    /* Check all panels and show the ok icon on the first occurence of a panel set to "Primary" */
-    for (panels = 0; xfconf_channel_has_property (channel, property); panels++)
-    {
-        primary_status_panel = xfconf_channel_get_string (channel, property, "Automatic");
-        if (g_strcmp0 (primary_status_panel, "Primary") == 0)
-        {
-            gtk_widget_show (GTK_WIDGET (widget));
-            panels_with_primary++;
-        }
-        else
-            gtk_widget_hide (GTK_WIDGET (widget));
-        property = g_strdup_printf ("/panels/panel-%u/output-name", panels + 1);
-        g_free (primary_status_panel);
-    }
-    if (panels_with_primary > 1)
-    {
-        gchar *label;
-        widget = gtk_builder_get_object (builder, "panel-label");
-        label = g_strdup_printf (_("%d Xfce Panels"), panels_with_primary);
-        gtk_label_set_text (GTK_LABEL (widget), label);
-        g_free (label);
-    }
-    g_free (property);
-    g_object_unref (G_OBJECT (channel));
-    widget = gtk_builder_get_object (builder, "panel-configure");
-    g_signal_connect (widget, "clicked", G_CALLBACK (display_settings_launch_settings_dialogs), "xfce4-panel --preferences");
-
-    channel = xfconf_channel_new ("xfce4-desktop");
-    primary_status = xfconf_channel_get_bool (channel, "/desktop-icons/primary", FALSE);
-    widget = gtk_builder_get_object (builder, "desktop-ok");
-    gtk_widget_set_visible (GTK_WIDGET (widget), primary_status);
-    g_object_unref (G_OBJECT (channel));
-    widget = gtk_builder_get_object (builder, "desktop-configure");
-    g_signal_connect (widget, "clicked", G_CALLBACK (display_settings_launch_settings_dialogs), "xfdesktop-settings");
-
-    channel = xfconf_channel_new ("xfce4-notifyd");
-    primary_status = xfconf_channel_get_uint (channel, "/primary-monitor", 0);
-    widget = gtk_builder_get_object (builder, "notifications-ok");
-    gtk_widget_set_visible (GTK_WIDGET (widget), primary_status);
-    g_object_unref (G_OBJECT (channel));
-    widget = gtk_builder_get_object (builder, "notifications-configure");
-    g_signal_connect (widget, "clicked", G_CALLBACK (display_settings_launch_settings_dialogs), "xfce4-notifyd-config");
 }
 
 static GtkWidget *
@@ -2304,11 +1851,6 @@ display_settings_dialog_new (GtkBuilder *builder)
         gtk_widget_hide (GTK_WIDGET (mirror));
     }
 
-    /* Set up primary status info button */
-    display_settings_primary_status_info_populate (builder);
-    primary_indicator = gtk_builder_get_object (builder, "primary-indicator");
-    gtk_widget_set_visible (GTK_WIDGET (primary_indicator), gtk_switch_get_active (GTK_SWITCH (primary)));
-
     label = gtk_builder_get_object (builder, "label-reflection");
     gtk_widget_show (GTK_WIDGET (label));
 
@@ -2341,24 +1883,6 @@ display_settings_dialog_new (GtkBuilder *builder)
     display_settings_combo_box_create (GTK_COMBO_BOX (combobox), FALSE);
     g_signal_connect (G_OBJECT (combobox), "changed", G_CALLBACK (display_setting_rotations_changed), builder);
 
-    combobox = gtk_builder_get_object (builder, "randr-profile");
-    selection = gtk_tree_view_get_selection (GTK_TREE_VIEW (combobox));
-    gtk_tree_selection_set_mode (selection, GTK_SELECTION_SINGLE);
-    gtk_tree_view_set_activate_on_single_click (GTK_TREE_VIEW (combobox), FALSE);
-    g_signal_connect (G_OBJECT (selection), "changed", G_CALLBACK (display_settings_profile_changed), builder);
-    g_signal_connect (G_OBJECT (combobox), "row-activated", G_CALLBACK (display_settings_profile_row_activated), builder);
-
-    combobox = gtk_builder_get_object (builder, "autoconnect-mode");
-    g_signal_connect (G_OBJECT (combobox), "changed", G_CALLBACK (display_setting_minimal_autoconnect_mode_changed), builder);
-    xfconf_g_property_bind (display_channel, "/Notify", G_TYPE_INT, combobox,
-                            "active");
-    /* Correctly initialize the state of the auto-enable-profiles setting based on autoconnect-mode */
-    if (xfconf_channel_get_int (display_channel, "/Notify", -1) == -1)
-    {
-        gtk_combo_box_set_active (GTK_COMBO_BOX (combobox), NOTIFY_PROP_DEFAULT);
-        display_setting_minimal_autoconnect_mode_changed ((GTK_COMBO_BOX (combobox)), builder);
-    }
-
     apply_button = GTK_WIDGET (gtk_builder_get_object (builder, "apply"));
     g_signal_connect (G_OBJECT (apply_button), "clicked", G_CALLBACK (display_setting_apply), builder);
     gtk_widget_set_sensitive (apply_button, FALSE);
@@ -2367,29 +1891,8 @@ display_settings_dialog_new (GtkBuilder *builder)
     xfconf_g_property_bind (display_channel, "/RLModelEnabled", G_TYPE_BOOLEAN, check,
                             "active");
 
-    check = gtk_builder_get_object (builder, "auto-enable-profiles");
-    xfconf_g_property_bind (display_channel, "/AutoEnableProfiles", G_TYPE_BOOLEAN, check,
-                            "active");
-
-    button = GTK_WIDGET (gtk_builder_get_object (builder, "button-profile-save"));
-    gtk_widget_set_sensitive (button, FALSE);
-    g_signal_connect (G_OBJECT (button), "clicked", G_CALLBACK (display_settings_profile_save), builder);
-
-    button = GTK_WIDGET (gtk_builder_get_object (builder, "button-profile-delete"));
-    gtk_widget_set_sensitive (button, FALSE);
-    g_signal_connect (G_OBJECT (button), "clicked", G_CALLBACK (display_settings_profile_delete), builder);
-
-    button = GTK_WIDGET (gtk_builder_get_object (builder, "button-profile-apply"));
-    gtk_widget_set_sensitive (button, FALSE);
-    g_signal_connect (G_OBJECT (button), "clicked", G_CALLBACK (display_settings_profile_apply), builder);
-
-    button = GTK_WIDGET (gtk_builder_get_object (builder, "button-profile-create"));
-    g_signal_connect (G_OBJECT (button), "clicked", G_CALLBACK (display_settings_profile_create), builder);
-
     /* Populate the combobox */
     display_settings_combobox_populate (builder);
-    display_settings_profile_list_init (builder);
-    display_settings_profile_list_populate (builder);
 
     return GTK_WIDGET (gtk_builder_get_object (builder, "display-dialog"));
 }
@@ -2564,7 +2067,6 @@ screen_on_event (GdkXEvent *xevent,
     {
         xfce_randr_reload (xfce_randr);
         display_settings_combobox_populate (builder);
-        display_settings_profile_list_populate (builder);
 
         /* recreate the identify display popups */
         g_hash_table_destroy (display_popups);
