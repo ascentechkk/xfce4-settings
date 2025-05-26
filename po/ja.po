@@ -1113,6 +1113,10 @@ msgstr "ディスプレイ 2 のみ"
 msgid "radiobutton"
 msgstr "ラジオボタン"
 
+#: ../dialogs/display-settings/minimal-display-dialog.glade.h:7
+msgid "Displays - Basic Settings"
+msgstr "ディスプレイ - 簡易設定 "
+
 #: ../dialogs/display-settings/profile-changed-dialog.glade.h:1
 msgid "Update Display Profile"
 msgstr "ディスプレイプロファイルを更新"
