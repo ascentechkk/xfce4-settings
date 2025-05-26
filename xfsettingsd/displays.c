@@ -294,7 +294,7 @@ xfce_displays_helper_init (XfceDisplaysHelper *helper)
 #endif
 
             /*  check if we can auto-enable a profile */
-            if (xfconf_channel_get_bool (helper->channel, AUTO_ENABLE_PROFILES, FALSE) &&
+            if (xfconf_channel_get_bool (helper->channel, AUTO_ENABLE_PROFILES, TRUE) &&
                 xfconf_channel_get_int (helper->channel, NOTIFY_PROP, 1) > 0)
             {
                 gchar *matching_profile = NULL;
@@ -556,7 +556,7 @@ xfce_displays_helper_screen_on_event (GdkXEvent *xevent,
         if (old_outputs->len > helper->outputs->len ||
             old_outputs->len < helper->outputs->len)
         {
-            if (xfconf_channel_get_bool (helper->channel, AUTO_ENABLE_PROFILES, FALSE)
+            if (xfconf_channel_get_bool (helper->channel, AUTO_ENABLE_PROFILES, TRUE)
                 && autoconnect_mode > 0)
             {
                 gchar *matching_profile = NULL;
