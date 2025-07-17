@@ -26,6 +26,8 @@
 
 #define XFCE_RANDR_ROTATIONS_MASK             (RR_Rotate_0|RR_Rotate_90|RR_Rotate_180|RR_Rotate_270)
 #define XFCE_RANDR_REFLECTIONS_MASK           (RR_Reflect_X|RR_Reflect_Y)
+#define XFCE_RANDR_MAX_OUTPUTS                10 // 最大10台
+#define REFRESH_RATE_TOLERANCE                5  // ±0.05Hz
 
 /* check for randr 1.3 or better */
 #if RANDR_MAJOR > 1 || (RANDR_MAJOR == 1 && RANDR_MINOR >= 3)
@@ -40,6 +42,7 @@ typedef struct _XfceRRMode         XfceRRMode;
 typedef struct _XfceOutputInfo     XfceOutputInfo;
 typedef enum   _XfceOutputStatus   XfceOutputStatus;
 typedef struct _XfceOutputPosition XfceOutputPosition;
+typedef struct _ModeCandidate      ModeCandidate;
 
 enum _XfceOutputStatus
 {
@@ -110,6 +113,15 @@ struct _XfceOutputInfo
 
     /* User Data (e.g. GrabInfo) */
     gpointer   user_data;
+};
+
+struct _ModeCandidate
+{
+    gint    width;
+    gint    height;
+    gdouble rate;
+    gint16  rate100;
+    RRMode  modes_ids[XFCE_RANDR_MAX_OUTPUTS];
 };
 
 XfceRandr        *xfce_randr_new             (GdkDisplay      *display,
