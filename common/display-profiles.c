@@ -158,6 +158,11 @@ display_settings_get_profiles (GArray *display_infos, XfconfChannel *channel)
 
             gchar ** property_elements = g_strsplit (key, "/", -1);
             if (get_size (property_elements) == 3) {
+		if (g_strcmp0 (property_elements[2], "datetime") == 0)
+		{
+		    g_strfreev (property_elements);
+		    continue;
+		}
                 monitors++;
 
                 property = g_strdup_printf ("%s/EDID", (gchar*)key);
