@@ -700,6 +700,28 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 
 
 
+static gdouble
+xfce_randr_calculate_refresh_rate (XRRModeInfo *mode_info)
+{
+    if (mode_info->hTotal == 0 || mode_info->vTotal == 0)
+        return 0.0;
+    
+    return (gdouble) mode_info->dotClock / 
+           ((gdouble) mode_info->hTotal * (gdouble) mode_info->vTotal);
+}
+
+
+
+static gboolean
+modecandidate_is_compatible(const ModeCandidate *first, const ModeCandidate *second)
+{
+    return (first->width == second->width &&
+            first->height == second->height &&
+        abs(first->rate100 - second->rate100) <= REFRESH_RATE_TOLERANCE);
+}
+
+
+
 /**
  * xfce_randr_clonable_modes:
  * @randr: an #XfceRandr
@@ -716,42 +738,99 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 RRMode *
 xfce_randr_clonable_modes (XfceRandr *randr)
 {
-    gint   l, n, candidate, found;
-    guint  m;
-    RRMode modes[randr->noutput];
-
     g_return_val_if_fail (randr != NULL, NULL);
 
-    /* walk all available modes */
-    for (n = 0; n < randr->priv->resources->nmode; ++n)
-    {
-        candidate = TRUE;
-        /* walk all connected outputs */
-        for (m = 0; m < randr->noutput; ++m)
-        {
-            found = FALSE;
-            /* walk supported modes from this output */
-            for (l = 0; l < randr->priv->output_info[m]->nmode; ++l)
-            {
-                if (randr->priv->resources->modes[n].width == randr->priv->modes[m][l].width
-                    && randr->priv->resources->modes[n].height == randr->priv->modes[m][l].height)
-                {
-                    found = TRUE;
-                    modes[m] = randr->priv->output_info[m]->modes[l];
+    GHashTable *mode_info_map = g_hash_table_new(g_direct_hash, g_direct_equal);
+    for (int i = 0; i < randr->priv->resources->nmode; ++i) {
+        XRRModeInfo *mode_info = &randr->priv->resources->modes[i];
+        g_hash_table_insert(mode_info_map, GINT_TO_POINTER(mode_info->id), mode_info);
+    }
+
+    GPtrArray *output_mode_lists = g_ptr_array_new_with_free_func(g_array_unref);
+
+    for (guint output_index = 0; output_index < randr->noutput; ++output_index) {
+        GArray *valid_modes = g_array_new(FALSE, FALSE, sizeof(ModeCandidate));
+        XRROutputInfo *output_info = randr->priv->output_info[output_index];
+
+        for (gint mode_idx = 0; mode_idx < output_info->nmode; ++mode_idx) {
+            RRMode mode_id = output_info->modes[mode_idx];
+            XRRModeInfo *mode_info = g_hash_table_lookup(mode_info_map, GINT_TO_POINTER(mode_id));
+            if (!mode_info || mode_info->hTotal == 0 || mode_info->vTotal == 0)
+                continue;
+
+            ModeCandidate candidate_mode = {0};
+            candidate_mode.width = mode_info->width;
+            candidate_mode.height = mode_info->height;
+            candidate_mode.rate = xfce_randr_calculate_refresh_rate(mode_info);
+            candidate_mode.rate100 = (gint16)(candidate_mode.rate * 100 + 0.5);
+            candidate_mode.modes_ids[output_index] = mode_id;
+
+            g_array_append_val(valid_modes, candidate_mode);
+        }
+
+        if (valid_modes->len == 0) {
+            g_hash_table_destroy(mode_info_map);
+            g_ptr_array_free(output_mode_lists, TRUE);
+            return NULL;
+        }
+
+        g_ptr_array_add(output_mode_lists, valid_modes);
+    }
+
+    GArray *clonable_candidates = g_array_new(FALSE, FALSE, sizeof(ModeCandidate));
+    GArray *reference_output_modes = g_ptr_array_index(output_mode_lists, 0);
+
+    for (guint ref_idx = 0; ref_idx < reference_output_modes->len; ++ref_idx) {
+        ModeCandidate *reference_mode = &g_array_index(reference_output_modes, ModeCandidate, ref_idx);
+        gboolean is_compatible_with_all_outputs = TRUE;
+        ModeCandidate combined_candidate = *reference_mode;
+
+        for (guint output_index = 1; output_index < randr->noutput; ++output_index) {
+            GArray *other_output_modes = g_ptr_array_index(output_mode_lists, output_index);
+            gboolean has_compatible_mode = FALSE;
+
+            for (guint other_idx = 0; other_idx < other_output_modes->len; ++other_idx) {
+                ModeCandidate *candidate_mode = &g_array_index(other_output_modes, ModeCandidate, other_idx);
+                if (modecandidate_is_compatible(reference_mode, candidate_mode)) {
+                    combined_candidate.modes_ids[output_index] = candidate_mode->modes_ids[output_index];
+                    has_compatible_mode = TRUE;
                     break;
                 }
             }
 
-            /* if it is not present in one output, forget it */
-            candidate &= found;
+            if (!has_compatible_mode) {
+                is_compatible_with_all_outputs = FALSE;
+                break;
+            }
         }
 
-        /* common to all outputs, can be used for clone mode */
-        if (candidate)
-            return g_memdup (modes, sizeof (RRMode) * randr->noutput);
+        if (is_compatible_with_all_outputs)
+            g_array_append_val(clonable_candidates, combined_candidate);
     }
 
-    return NULL;
+    RRMode *best_clonable_modes = NULL;
+    gint max_pixel_area = 0;
+
+    if (clonable_candidates->len > 0)
+        best_clonable_modes = g_new(RRMode, randr->noutput);
+
+    for (guint i = 0; i < clonable_candidates->len; ++i) {
+        ModeCandidate *candidate = &g_array_index(clonable_candidates, ModeCandidate, i);
+        gint pixel_area = candidate->width * candidate->height;
+        if (pixel_area > max_pixel_area) {
+            for (guint j = 0; j < randr->noutput; ++j)
+                best_clonable_modes[j] = candidate->modes_ids[j];
+            max_pixel_area = pixel_area;
+        }
+    }
+
+    for (guint i = 0; i < output_mode_lists->len; ++i)
+        g_array_unref(g_ptr_array_index(output_mode_lists, i));
+    g_ptr_array_free(output_mode_lists, TRUE);
+    g_array_free(clonable_candidates, TRUE);
+    g_hash_table_destroy(mode_info_map);
+
+    return best_clonable_modes;
 }
 
 
