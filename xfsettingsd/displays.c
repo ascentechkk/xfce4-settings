@@ -324,9 +324,10 @@ xfce_displays_helper_init (XfceDisplaysHelper *helper)
                 g_free (matching_profile);
             }
             else
-                xfce_displays_helper_channel_apply (helper, DEFAULT_SCHEME_NAME);
-                
-	}
+            {
+                xfce_displays_helper_create_profile(helper);
+            }
+        }
         else
         {
              g_critical ("RANDR extension is too old, version %d.%d. "
