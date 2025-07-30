@@ -917,3 +917,97 @@ xfce_randr_mode_height (const XfceRRMode *mode,
     else
         return mode->height;
 }
+
+
+
+static gchar *current_mode_name = NULL;
+
+
+
+static gboolean
+mode_exists(const gchar *mode_name)
+{
+    g_autofree gchar *output = NULL;
+    g_autoptr(GError) error = NULL;
+
+    if (!g_spawn_command_line_sync("xrandr --query", &output, NULL, NULL, &error)) {
+        return FALSE;
+    }
+
+    return output && strstr(output, mode_name) != NULL;
+}
+
+
+
+static gchar *
+extract_modeline(const gchar *gtf_output)
+{
+    static const char *Modeline = "Modeline";
+    const gchar *start = strstr(gtf_output, Modeline);
+    if (!start) return NULL;
+
+    start += strlen(Modeline);
+    while (g_ascii_isspace(*start)) start++;
+
+    const gchar *end = strchr(start, '\n');
+    return end ? g_strndup(start, end - start) : g_strdup(start);
+}
+
+
+
+static gchar *
+extract_mode_name(const gchar *modeline)
+{
+    const gchar *space = strchr(modeline, ' ');
+    return space ? g_strndup(modeline, space - modeline) : g_strdup(modeline);
+}
+
+
+
+void
+xfce_randr_register_mode(gint width, gint height, gint refresh)
+{
+    g_autofree gchar *gtf_cmd = g_strdup_printf("gtf %d %d %d", width, height, refresh);
+    g_autofree gchar *gtf_output = NULL;
+    g_autoptr(GError) error = NULL;
+
+    if (!g_spawn_command_line_sync(gtf_cmd, &gtf_output, NULL, NULL, &error)) {
+        return;
+    }
+
+    g_autofree gchar *modeline = extract_modeline(gtf_output);
+    if (!modeline) {
+        return;
+    }
+
+    g_free(current_mode_name);
+    current_mode_name = extract_mode_name(modeline);
+
+    if (mode_exists(current_mode_name)) {
+        return;
+    }
+
+    g_autofree gchar *cmd = g_strdup_printf("xrandr --newmode %s", modeline);
+    g_clear_error(&error);
+    if(!g_spawn_command_line_async(cmd, &error)) {
+        return;
+    }
+}
+
+
+
+void
+xfce_randr_add_mode(const gchar *output_name)
+{
+    if (!current_mode_name) {
+        return;
+    }
+
+    g_autofree gchar *cmd = g_strdup_printf("xrandr --addmode %s %s",
+                                            output_name, current_mode_name);
+    g_autoptr(GError) error = NULL;
+
+    if(!g_spawn_command_line_async(cmd, &error)) {
+        return;
+    }
+}
