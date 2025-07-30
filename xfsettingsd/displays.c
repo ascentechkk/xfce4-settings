@@ -80,8 +80,8 @@ typedef struct _XfceRROutput XfceRROutput;
 static void             xfce_displays_helper_dispose                        (GObject                 *object);
 static void             xfce_displays_helper_finalize                       (GObject                 *object);
 static void             xfce_displays_helper_reload                         (XfceDisplaysHelper      *helper);
-static void             xfce_displays_helper_dialog_response                (GtkDialog               *dialog, 
-                                                                             gint                     response_id, 
+static void             xfce_displays_helper_dialog_response                (GtkDialog               *dialog,
+                                                                             gint                     response_id,
                                                                              gpointer                 user_data);
 static void             xfce_displays_helper_show_dialog                    (GtkMessageType           message_type,
                                                                              const gchar             *message);
@@ -135,6 +135,8 @@ static void             xfce_displays_helper_apply_crtc                     (Xfc
                                                                              XfceDisplaysHelper      *helper);
 static void             xfce_displays_helper_set_outputs                    (XfceRRCrtc              *crtc,
                                                                              XfceRROutput            *output);
+static void             xfce_displays_helper_add_mode                       (XfceRRCrtc              *crtc,
+                                                                             XfceDisplaysHelper      *helper);
 static void             xfce_displays_helper_apply_all                      (XfceDisplaysHelper      *helper);
 static void             xfce_displays_helper_channel_apply                  (XfceDisplaysHelper      *helper,
                                                                              const gchar             *scheme);
@@ -314,6 +316,7 @@ xfce_displays_helper_init (XfceDisplaysHelper *helper)
 #ifdef HAS_RANDR_ONE_POINT_THREE
             helper->has_1_3 = (major > 1 || (major == 1 && minor >= 3));
 #endif
+            xfce_randr_register_mode(1920, 1080, 60);
 
             gchar *matching_profile = NULL;
 
@@ -455,8 +458,8 @@ static GtkWidget *current_dialog = NULL;
 
 
 static void
-xfce_displays_helper_dialog_response(GtkDialog *dialog, 
-                                     gint response_id, 
+xfce_displays_helper_dialog_response(GtkDialog *dialog,
+                                     gint response_id,
                                      gpointer user_data)
 {
     gtk_widget_destroy(GTK_WIDGET(dialog));
@@ -603,24 +606,24 @@ xfce_displays_helper_profile_has_datetime (XfceDisplaysHelper *helper,
 
     datetime_property = g_strdup_printf ("/%s/datetime", profile_hash);
     datetime = xfconf_channel_get_string (helper->channel, datetime_property, NULL);
-    
+
     if (datetime != NULL && *datetime != '\0')
     {
         has_datetime = TRUE;
         if (datetime_out != NULL)
             *datetime_out = g_strdup (datetime);
     }
-    
+
     g_free (datetime);
     g_free (datetime_property);
-    
+
     return has_datetime;
 }
 
 
 
 static gchar *
-xfce_displays_helper_select_profile(XfceDisplaysHelper *helper, 
+xfce_displays_helper_select_profile(XfceDisplaysHelper *helper,
                                     GList              *profiles)
 {
     gchar *selected_profile = NULL;
@@ -665,18 +668,18 @@ xfce_displays_helper_set_profile_datetime(XfceDisplaysHelper *helper,
 {
     gchar *datetime_property;
     gchar *datetime_str;
-    
+
     g_return_if_fail(XFCE_IS_DISPLAYS_HELPER(helper));
     g_return_if_fail(profile_hash != NULL && *profile_hash != '\0');
-    
+
     if (datetime == NULL || *datetime == '\0')
         datetime_str = xfce_displays_helper_generate_datetime();
     else
         datetime_str = g_strdup(datetime);
-    
+
     datetime_property = g_strdup_printf("/%s/datetime", profile_hash);
     xfconf_channel_set_string(helper->channel, datetime_property, datetime_str);
-    
+
     g_free(datetime_property);
     g_free(datetime_str);
 }
@@ -723,22 +726,22 @@ xfce_displays_helper_save_profile(XfceDisplaysHelper *helper,
 {
     g_return_val_if_fail(XFCE_IS_DISPLAYS_HELPER(helper), FALSE);
     g_return_val_if_fail(profile_hash != NULL && *profile_hash != '\0', FALSE);
-    
+
     GError *error = NULL;
-    
+
     XfceRandr *xfce_randr = xfce_randr_new(helper->display, &error);
     if (G_UNLIKELY(xfce_randr == NULL)) {
-        g_warning("Failed to create XfceRandr: %s", 
+        g_warning("Failed to create XfceRandr: %s",
                   error ? error->message : "Unknown error");
         g_clear_error(&error);
         return FALSE;
     }
-    
+
     for (guint i = 0; i < xfce_randr->noutput; i++) {
-        xfce_randr_save_output(xfce_randr, profile_hash, 
+        xfce_randr_save_output(xfce_randr, profile_hash,
                                    helper->channel, i);
     }
-    
+
     gchar *property = g_strdup_printf("/%s", profile_hash);
     gchar *save_profile_name = NULL;
     if (profile_name == NULL || *profile_name == '\0')
@@ -746,17 +749,17 @@ xfce_displays_helper_save_profile(XfceDisplaysHelper *helper,
         save_profile_name = xfconf_channel_get_string(helper->channel, property, NULL);
         if (save_profile_name == NULL)
             save_profile_name = g_strdup("Unnamed Profile");
-    } 
+    }
     else
         save_profile_name = g_strdup(profile_name);
-    
+
     xfconf_channel_set_string(helper->channel, property, save_profile_name);
     xfconf_channel_set_string(helper->channel, ACTIVE_PROFILE, profile_hash);
-    
+
     g_free(property);
     g_free(save_profile_name);
     xfce_randr_free(xfce_randr);
-    
+
     return TRUE;
 }
 
@@ -766,15 +769,15 @@ static gboolean
 xfce_displays_helper_create_profile(XfceDisplaysHelper *helper)
 {
     g_return_val_if_fail(XFCE_IS_DISPLAYS_HELPER(helper), FALSE);
-    
+
     gchar *profile_name = xfce_displays_helper_generate_datetime();
     if (G_UNLIKELY(profile_name == NULL || *profile_name == '\0')) {
         g_warning("Failed to generate profile name");
         g_free(profile_name);
         return FALSE;
     }
-    
-    gchar *profile_hash = g_compute_checksum_for_string(G_CHECKSUM_SHA1, 
+
+    gchar *profile_hash = g_compute_checksum_for_string(G_CHECKSUM_SHA1,
                                                         profile_name, -1);
     if (G_UNLIKELY(profile_hash == NULL)) {
         g_warning("Failed to compute profile hash");
@@ -797,11 +800,11 @@ xfce_displays_helper_generate_datetime(void)
 {
     GDateTime *now;
     gchar *datetime;
-    
+
     now = g_date_time_new_now_local();
     datetime = g_date_time_format(now, "%Y%m%d%H%M%S%f");
     g_date_time_unref(now);
-    
+
     return datetime;
 }
 
@@ -1758,6 +1761,29 @@ xfce_displays_helper_set_outputs (XfceRRCrtc   *crtc,
 
 
 static void
+xfce_displays_helper_add_mode (XfceRRCrtc         *crtc,
+                               XfceDisplaysHelper *helper)
+{
+    if (!crtc || crtc->mode == None)
+        return;
+
+    for (gint i = 0; i < crtc->noutput; ++i)
+    {
+        XRROutputInfo *output_info = XRRGetOutputInfo (helper->xdisplay,
+                                                       helper->resources,
+                                                       crtc->outputs[i]);
+        if (output_info)
+        {
+            if (output_info->connection == RR_Connected)
+                xfce_randr_add_mode (output_info->name);
+            XRRFreeOutputInfo (output_info);
+        }
+    }
+}
+
+
+
+static void
 xfce_displays_helper_apply_all (XfceDisplaysHelper *helper)
 {
     g_assert (XFCE_IS_DISPLAYS_HELPER (helper) && helper->crtcs);
@@ -1779,6 +1805,8 @@ xfce_displays_helper_apply_all (XfceDisplaysHelper *helper)
 
     /* set the screen size only if it's really needed and valid */
     xfce_displays_helper_set_screen_size (helper);
+
+    g_ptr_array_foreach (helper->crtcs, (GFunc) xfce_displays_helper_add_mode, helper);
 
     /* final loop, apply crtc changes */
     g_ptr_array_foreach (helper->crtcs, (GFunc) xfce_displays_helper_apply_crtc, helper);
