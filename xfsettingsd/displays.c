@@ -80,8 +80,8 @@ typedef struct _XfceRROutput XfceRROutput;
 static void             xfce_displays_helper_dispose                        (GObject                 *object);
 static void             xfce_displays_helper_finalize                       (GObject                 *object);
 static void             xfce_displays_helper_reload                         (XfceDisplaysHelper      *helper);
-static void             xfce_displays_helper_dialog_response                (GtkDialog               *dialog, 
-                                                                             gint                     response_id, 
+static void             xfce_displays_helper_dialog_response                (GtkDialog               *dialog,
+                                                                             gint                     response_id,
                                                                              gpointer                 user_data);
 static void             xfce_displays_helper_show_dialog                    (GtkMessageType           message_type,
                                                                              const gchar             *message);
@@ -135,6 +135,8 @@ static void             xfce_displays_helper_apply_crtc                     (Xfc
                                                                              XfceDisplaysHelper      *helper);
 static void             xfce_displays_helper_set_outputs                    (XfceRRCrtc              *crtc,
                                                                              XfceRROutput            *output);
+static void             xfce_displays_helper_add_mode                       (XfceRRCrtc              *crtc,
+                                                                             XfceDisplaysHelper      *helper);
 static void             xfce_displays_helper_apply_all                      (XfceDisplaysHelper      *helper);
 static void             xfce_displays_helper_channel_apply                  (XfceDisplaysHelper      *helper,
                                                                              const gchar             *scheme);
@@ -314,6 +316,7 @@ xfce_displays_helper_init (XfceDisplaysHelper *helper)
 #ifdef HAS_RANDR_ONE_POINT_THREE
             helper->has_1_3 = (major > 1 || (major == 1 && minor >= 3));
 #endif
+            xfce_randr_register_mode(1920, 1080, 60);
 
             gchar *matching_profile = NULL;
 
@@ -1759,6 +1762,29 @@ xfce_displays_helper_set_outputs (XfceRRCrtc   *crtc,
 
 
 static void
+xfce_displays_helper_add_mode (XfceRRCrtc         *crtc,
+                               XfceDisplaysHelper *helper)
+{
+    if (!crtc || crtc->mode == None)
+        return;
+
+    for (gint i = 0; i < crtc->noutput; ++i)
+    {
+        XRROutputInfo *output_info = XRRGetOutputInfo (helper->xdisplay,
+                                                       helper->resources,
+                                                       crtc->outputs[i]);
+        if (output_info)
+        {
+            if (output_info->connection == RR_Connected)
+                xfce_randr_add_mode (output_info->name);
+            XRRFreeOutputInfo (output_info);
+        }
+    }
+}
+
+
+
+static void
 xfce_displays_helper_apply_all (XfceDisplaysHelper *helper)
 {
     g_assert (XFCE_IS_DISPLAYS_HELPER (helper) && helper->crtcs);
@@ -1780,6 +1806,8 @@ xfce_displays_helper_apply_all (XfceDisplaysHelper *helper)
 
     /* set the screen size only if it's really needed and valid */
     xfce_displays_helper_set_screen_size (helper);
+
+    g_ptr_array_foreach (helper->crtcs, (GFunc) xfce_displays_helper_add_mode, helper);
 
     /* final loop, apply crtc changes */
     g_ptr_array_foreach (helper->crtcs, (GFunc) xfce_displays_helper_apply_crtc, helper);
