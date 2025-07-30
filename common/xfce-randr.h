@@ -180,4 +180,10 @@ guint             xfce_randr_mode_width      (const XfceRRMode *mode,
 guint             xfce_randr_mode_height     (const XfceRRMode *mode,
                                               Rotation          rot);
 
+void              xfce_randr_register_mode   (gint              width,
+                                              gint              height,
+                                              gint              refresh);
+
+void              xfce_randr_add_mode        (const gchar       *output_name);
+
 #endif /* !__XFCE_RANDR_H__ */
