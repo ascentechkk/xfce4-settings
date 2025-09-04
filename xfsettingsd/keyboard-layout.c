@@ -65,6 +65,7 @@ static GdkFilterReturn handle_xevent                              (GdkXEvent    
                                                                    XfceKeyboardLayoutHelper      *helper);
 static void xfce_keyboard_layout_reset_xkl_config                 (XklEngine                     *xklengine,
                                                                    XfceKeyboardLayoutHelper      *helper);
+static void xfce_keyboard_layout_apply_with_setxkbmap             (XfceKeyboardLayoutHelper      *helper);
 #endif /* HAVE_LIBXKLAVIER */
 
 struct _XfceKeyboardLayoutHelperClass
@@ -91,6 +92,64 @@ struct _XfceKeyboardLayoutHelper
 };
 
 G_DEFINE_TYPE (XfceKeyboardLayoutHelper, xfce_keyboard_layout_helper, G_TYPE_OBJECT);
+
+static void
+xfce_keyboard_layout_apply_with_setxkbmap (XfceKeyboardLayoutHelper *helper)
+{
+    g_return_if_fail (helper != NULL);
+
+    GString *cmd = g_string_new ("setxkbmap");
+    GError  *error = NULL;
+
+    /* model */
+    if (helper->config->model && *helper->config->model)
+    {
+        gchar *q = g_shell_quote (helper->config->model);
+        g_string_append_printf (cmd, " -model %s", q);
+        g_free (q);
+    }
+
+    /* layout / variant: comma-separated */
+    gchar *layouts  = helper->config->layouts  ? g_strjoinv (",", helper->config->layouts)   : NULL;
+    gchar *variants = helper->config->variants ? g_strjoinv (",", helper->config->variants)  : NULL;
+    gchar *options  = helper->config->options  ? g_strjoinv (",", helper->config->options)   : NULL;
+
+    if (layouts && *layouts)
+    {
+        gchar *q = g_shell_quote (layouts);
+        g_string_append_printf (cmd, " -layout %s", q);
+        g_free (q);
+    }
+    if (variants && *variants)
+    {
+        gchar *q = g_shell_quote (variants);
+        g_string_append_printf (cmd, " -variant %s", q);
+        g_free (q);
+    }
+    /* options: empty -> clear with -option '' */
+    if (options && *options)
+    {
+        gchar *q = g_shell_quote (options);
+        g_string_append_printf (cmd, " -option %s", q);
+        g_free (q);
+    }
+    else
+    {
+        g_string_append (cmd, " -option ''");
+    }
+
+    xfsettings_dbg (XFSD_DEBUG_KEYBOARD_LAYOUT, "spawning \"%s\"", cmd->str);
+    if (!g_spawn_command_line_async (cmd->str, &error))
+    {
+        DBG ("setxkbmap call failed: %s", error->message);
+        g_error_free (error);
+    }
+
+    g_free (layouts);
+    g_free (variants);
+    g_free (options);
+    g_string_free (cmd, TRUE);
+}
 
 static void
 xfce_keyboard_layout_helper_class_init (XfceKeyboardLayoutHelperClass *klass)
@@ -213,7 +272,8 @@ xfce_keyboard_layout_helper_set_model (XfceKeyboardLayoutHelper *helper)
         {
             g_free (helper->config->model);
             helper->config->model = xkbmodel;
-            xkl_config_rec_activate (helper->config, helper->engine);
+            /* xkl_config_rec_activate (helper->config, helper->engine); */
+            xfce_keyboard_layout_apply_with_setxkbmap (helper);
 
             xfsettings_dbg (XFSD_DEBUG_KEYBOARD_LAYOUT, "set model to \"%s\"", xkbmodel);
         }
@@ -246,7 +306,8 @@ xfce_keyboard_layout_helper_set (XfceKeyboardLayoutHelper *helper,
             values = g_strsplit_set (xkl_values, ",", 0);
             g_strfreev (*xkl_config_option);
             *xkl_config_option = values;
-            xkl_config_rec_activate (helper->config, helper->engine);
+            /* xkl_config_rec_activate (helper->config, helper->engine); */
+            xfce_keyboard_layout_apply_with_setxkbmap (helper);
 
             xfsettings_dbg (XFSD_DEBUG_KEYBOARD_LAYOUT, "set %s to \"%s\"", debug_name, xkl_values);
         }
@@ -355,7 +416,8 @@ xfce_keyboard_layout_helper_set_option (XfceKeyboardLayoutHelper *helper,
 
             g_strfreev (helper->config->options);
             helper->config->options = g_strsplit (options_string, ",", 0);
-            xkl_config_rec_activate (helper->config, helper->engine);
+            /* xkl_config_rec_activate (helper->config, helper->engine); */
+            xfce_keyboard_layout_apply_with_setxkbmap (helper);
 
             xfsettings_dbg (XFSD_DEBUG_KEYBOARD_LAYOUT, "set %s to \"%s\"",
                             xkb_option_name, option_value);
