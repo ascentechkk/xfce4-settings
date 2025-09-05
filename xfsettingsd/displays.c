@@ -80,11 +80,6 @@ typedef struct _XfceRROutput XfceRROutput;
 static void             xfce_displays_helper_dispose                        (GObject                 *object);
 static void             xfce_displays_helper_finalize                       (GObject                 *object);
 static void             xfce_displays_helper_reload                         (XfceDisplaysHelper      *helper);
-static void             xfce_displays_helper_dialog_response                (GtkDialog               *dialog,
-                                                                             gint                     response_id,
-                                                                             gpointer                 user_data);
-static void             xfce_displays_helper_show_dialog                    (GtkMessageType           message_type,
-                                                                             const gchar             *message);
 static guint8          *xfce_displays_helper_retry_read_edid_data           (Display                 *xdisplay,
                                                                              XfceRROutput            *output);
 static GArray          *xfce_displays_helper_get_display_infos              (gint                     noutput,
@@ -454,59 +449,6 @@ xfce_displays_helper_reload (XfceDisplaysHelper *helper)
 
 
 
-static GtkWidget *current_dialog = NULL;
-
-
-
-static void
-xfce_displays_helper_dialog_response(GtkDialog *dialog, 
-                                     gint response_id, 
-                                     gpointer user_data)
-{
-    gtk_widget_destroy(GTK_WIDGET(dialog));
-    current_dialog = NULL;
-}
-
-
-
-static void
-xfce_displays_helper_show_dialog(GtkMessageType message_type,
-                                 const gchar *message)
-{
-    if (current_dialog != NULL)
-        return;
-
-    current_dialog = gtk_message_dialog_new(NULL,
-                                            GTK_DIALOG_DESTROY_WITH_PARENT,
-                                            message_type,
-                                            GTK_BUTTONS_OK,
-                                            "%s", message);
-
-    gtk_window_set_title(GTK_WINDOW(current_dialog), "ディスプレイ設定");
-
-    switch (message_type)
-    {
-        case GTK_MESSAGE_ERROR:
-            gtk_window_set_title(GTK_WINDOW(current_dialog), "エラー");
-            break;
-        case GTK_MESSAGE_WARNING:
-            gtk_window_set_title(GTK_WINDOW(current_dialog), "警告");
-            break;
-        case GTK_MESSAGE_QUESTION:
-            gtk_window_set_title(GTK_WINDOW(current_dialog), "確認");
-            break;
-        case GTK_MESSAGE_INFO:
-        default:
-            gtk_window_set_title(GTK_WINDOW(current_dialog), "情報");
-            break;
-    }
-
-    g_signal_connect(current_dialog, "response", G_CALLBACK(xfce_displays_helper_dialog_response), NULL);
-    gtk_widget_show_all(current_dialog);
-}
-
-
-
 static guint8 *
 xfce_displays_helper_retry_read_edid_data(Display *xdisplay,
                                           XfceRROutput *output)
@@ -531,8 +473,6 @@ xfce_displays_helper_retry_read_edid_data(Display *xdisplay,
                 g_usleep(500000);
 
                 edid_data = xfce_randr_read_edid_data(xdisplay, output->id);
-                if (!edid_data)
-                    xfce_displays_helper_show_dialog(GTK_MESSAGE_ERROR, "ディスプレイ情報が読み取れませんでした。\n(E0101001)");
             }
 
             XRRFreeOutputInfo(current_info);
