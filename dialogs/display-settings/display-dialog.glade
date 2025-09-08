@@ -65,6 +65,7 @@
       <object class="GtkBox" id="dialog-vbox1">
         <property name="visible">True</property>
         <property name="can-focus">False</property>
+        <property name="double-buffered">False</property>
         <property name="orientation">vertical</property>
         <child internal-child="action_area">
           <object class="GtkButtonBox" id="dialog-action_area1">
@@ -142,13 +143,41 @@
                       </packing>
                     </child>
                     <child>
-                      <object class="GtkCheckButton" id="mirror-displays">
-                        <property name="label" translatable="yes">_Mirror displays</property>
+                      <!-- n-columns=2 n-rows=1 -->
+                      <object class="GtkGrid">
                         <property name="visible">True</property>
-                        <property name="can-focus">True</property>
-                        <property name="receives-default">False</property>
-                        <property name="use-underline">True</property>
-                        <property name="draw-indicator">True</property>
+                        <property name="can-focus">False</property>
+                        <property name="column-spacing">7</property>
+                        <child>
+                          <object class="GtkSwitch" id="mirror-displays">
+                            <property name="visible">True</property>
+                            <property name="can-focus">True</property>
+                            <property name="halign">end</property>
+                            <property name="valign">center</property>
+                            <property name="margin-start">12</property>
+                          </object>
+                          <packing>
+                            <property name="left-attach">0</property>
+                            <property name="top-attach">0</property>
+                          </packing>
+                        </child>
+                        <child>
+                          <object class="GtkLabel" id="mirror-label">
+                            <property name="visible">True</property>
+                            <property name="can-focus">False</property>
+                            <property name="label" translatable="yes">_Mirror displays</property>
+                            <property name="use_underline">True</property>
+                            <property name="mnemonic_widget">mirror-displays</property>  
+                            <property name="xalign">0</property>
+                            <accessibility>
+                              <relation type="controller-for" target="mirror-displays"/>
+                            </accessibility>
+                          </object>
+                          <packing>
+                            <property name="left-attach">1</property>
+                            <property name="top-attach">0</property>
+                          </packing>
+                        </child>
                       </object>
                       <packing>
                         <property name="expand">False</property>
