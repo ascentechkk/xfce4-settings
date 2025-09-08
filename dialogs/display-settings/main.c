@@ -1578,59 +1578,6 @@ display_settings_get_display_infos (void)
 }
 
 static void
-display_settings_minimal_profile_populate (GtkBuilder *builder)
-{
-    GObject  *profile_box, *profile_display1;
-    GList    *profiles = NULL;
-    GList    *current;
-    GArray   *display_infos;
-
-    profile_box  = gtk_builder_get_object (builder, "profile-box");
-    profile_display1  = gtk_builder_get_object (builder, "display1");
-
-    display_infos = display_settings_get_display_infos ();
-    profiles = display_settings_get_profiles (display_infos, display_channel);
-    rl_display_infos_free (display_infos);
-
-    current = g_list_first (profiles);
-    while (current)
-    {
-        GtkWidget *box, *profile_radio, *label, *image;
-        gchar *property;
-        gchar *profile_name;
-
-        /* use the display string value of the profile hash property */
-        property = g_strdup_printf ("/%s", (gchar *)current->data);
-        profile_name = xfconf_channel_get_string (display_channel, property, NULL);
-
-        label = gtk_label_new (profile_name);
-        image = gtk_image_new_from_icon_name ("xfce-display-profile", 128);
-        gtk_image_set_pixel_size (GTK_IMAGE (image), 128);
-
-        profile_radio = gtk_radio_button_new_from_widget (GTK_RADIO_BUTTON (profile_display1));
-        gtk_container_add (GTK_CONTAINER (profile_radio), image);
-        g_object_set_data (G_OBJECT (profile_radio), "profile", (gchar *)current->data);
-        gtk_toggle_button_set_mode (GTK_TOGGLE_BUTTON (profile_radio), FALSE);
-        gtk_widget_set_size_request (GTK_WIDGET (profile_radio), 128, 128);
-
-        box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
-        gtk_box_pack_start (GTK_BOX (box), profile_radio, FALSE, TRUE, 0);
-        gtk_box_pack_start (GTK_BOX (box), label, FALSE, TRUE, 3);
-        gtk_widget_set_margin_start (GTK_WIDGET (box), 24);
-        gtk_box_pack_start (GTK_BOX (profile_box), box, FALSE, FALSE, 0);
-
-        g_signal_connect (profile_radio, "toggled", G_CALLBACK (display_settings_minimal_profile_apply),
-                          builder);
-
-        current = g_list_next (current);
-        g_free (property);
-        g_free (profile_name);
-    }
-
-    gtk_widget_show_all (GTK_WIDGET (profile_box));
-}
-
-static void
 display_settings_profile_list_init (GtkBuilder *builder)
 {
     GtkListStore      *store;
@@ -4187,7 +4134,7 @@ display_settings_show_minimal_dialog (GdkDisplay *display)
     GtkBuilder *builder;
     GtkWidget  *dialog, *cancel;
     GObject    *only_display1, *only_display2, *mirror_displays, *mirror_displays_label;
-    GObject    *extend_right, *advanced, *fake_button, *label, *profile_box;
+    GObject    *extend_right, *advanced, *fake_button, *label;
     GError     *error = NULL;
     gboolean    found = FALSE;
     RRMode     *clonable_modes;
@@ -4220,9 +4167,6 @@ display_settings_show_minimal_dialog (GdkDisplay *display)
         only_display2 = gtk_builder_get_object (builder, "display2");
         advanced = gtk_builder_get_object (builder, "advanced_button");
         fake_button = gtk_builder_get_object (builder, "fake_button");
-
-        /* Create the profile radiobuttons */
-        display_settings_minimal_profile_populate (builder);
 
         gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (fake_button), TRUE);
 
@@ -4319,39 +4263,6 @@ display_settings_show_minimal_dialog (GdkDisplay *display)
                           builder);
 
         g_signal_connect (app, "activate", G_CALLBACK (display_settings_minimal_activated), builder);
-
-        /* Auto-apply the first profile in the list */
-        if (xfconf_channel_get_bool (display_channel, "/AutoEnableProfiles", TRUE))
-        {
-            /* Walz down the widget hierarchy: profile-box -> gtkbox -> gtkradiobutton */
-            profile_box  = gtk_builder_get_object (builder, "profile-box");
-            if (GTK_IS_CONTAINER (profile_box))
-            {
-                GList *children = NULL;
-                GList *first_profile_box;
-
-                children = gtk_container_get_children (GTK_CONTAINER (profile_box));
-                first_profile_box = g_list_first (children);
-                if (first_profile_box)
-                {
-                    GList *grand_children = NULL;
-                    GList *current;
-                    GtkWidget *box = GTK_WIDGET (first_profile_box->data);
-
-                    grand_children = gtk_container_get_children (GTK_CONTAINER (box));
-                    current = g_list_first (grand_children);
-                    if (current)
-                    {
-                        GtkWidget* widget = GTK_WIDGET (grand_children->data);
-
-                        if (GTK_IS_TOGGLE_BUTTON (widget))
-                        {
-                            gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (widget), TRUE);
-                        }
-                    }
-                }
-            }
-        }
 
         /* Show the minimal dialog and start the main loop */
         gtk_window_present (GTK_WINDOW (dialog));
