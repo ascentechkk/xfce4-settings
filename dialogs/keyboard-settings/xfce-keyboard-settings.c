@@ -265,6 +265,14 @@ xfce_keyboard_settings_init (XfceKeyboardSettings *settings)
       g_error ("Failed to load the UI file: %s.", error->message);
       g_error_free (error);
     }
+#ifndef NO_RESALIO_LYNX
+  {
+    GObject* notebook = NULL;
+
+    notebook = gtk_builder_get_object (GTK_BUILDER (settings), "plug-child");
+    gtk_notebook_remove_page (notebook, 1);
+  }
+#endif /* NO_RESALIO_LYNX */
 }
 
 

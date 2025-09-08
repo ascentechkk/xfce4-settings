@@ -54,6 +54,7 @@ struct _XfceRandrPrivate
     XfceRRMode         **modes;
     /* SHA-1 checksum of the EDID */
     gchar              **edid;
+    gchar              **rlmodel;
 };
 
 
@@ -211,6 +212,7 @@ xfce_randr_populate (XfceRandr *randr,
     randr->mode = g_new0 (RRMode, randr->noutput);
     randr->priv->modes = g_new0 (XfceRRMode *, randr->noutput);
     randr->priv->edid = g_new0 (gchar *, randr->noutput);
+    randr->priv->rlmodel = g_new0 (gchar *, randr->noutput);
     randr->position = g_new0 (XfceOutputPosition, randr->noutput);
     randr->scalex = g_new0 (gdouble, randr->noutput);
     randr->scaley = g_new0 (gdouble, randr->noutput);
@@ -345,6 +347,8 @@ xfce_randr_cleanup (XfceRandr *randr)
             g_free (randr->priv->modes[n]);
         if (G_LIKELY (randr->priv->edid[n]))
             g_free (randr->priv->edid[n]);
+        if (G_LIKELY (randr->priv->rlmodel[n]))
+            g_free (randr->priv->rlmodel[n]);
         if (G_LIKELY (randr->friendly_name[n]))
             g_free (randr->friendly_name[n]);
     }
@@ -357,6 +361,7 @@ xfce_randr_cleanup (XfceRandr *randr)
     g_free (randr->mode);
     g_free (randr->priv->modes);
     g_free (randr->priv->edid);
+    g_free (randr->priv->rlmodel);
     g_free (randr->scalex);
     g_free (randr->scaley);
     g_free (randr->rotation);
@@ -443,6 +448,10 @@ xfce_randr_save_output (XfceRandr     *randr,
     g_snprintf (property, sizeof (property), "/%s/%s/EDID", scheme,
                 randr->priv->output_info[output]->name);
     xfconf_channel_set_string (channel, property, randr->priv->edid[output]);
+
+    g_snprintf (property, sizeof (property), "/%s/%s/RLMODEL", scheme,
+                randr->priv->output_info[output]->name);
+    xfconf_channel_set_string (channel, property, randr->priv->rlmodel[output]);
 
     if (mode == NULL)
         return;
@@ -589,6 +598,9 @@ xfce_randr_friendly_name (XfceRandr *randr,
         info = decode_edid (edid_data);
         randr->priv->edid[output] = g_compute_checksum_for_data (G_CHECKSUM_SHA1 , edid_data, 128);
     }
+
+    if (info)
+       randr->priv->rlmodel[output] = rl_make_rlmodel (info);
 
     /* special case, a laptop */
     if (g_str_has_prefix (name, "LVDS")
@@ -749,6 +761,15 @@ xfce_randr_get_edid (XfceRandr *randr,
                      guint noutput)
 {
     return randr->priv->edid[noutput];
+}
+
+
+
+gchar *
+rl_xfce_randr_get_rlmodel (XfceRandr *randr,
+                           guint noutput)
+{
+    return randr->priv->rlmodel[noutput];
 }
 
 
