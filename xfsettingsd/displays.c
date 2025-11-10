@@ -80,8 +80,6 @@ typedef struct _XfceRROutput XfceRROutput;
 static void             xfce_displays_helper_dispose                        (GObject                 *object);
 static void             xfce_displays_helper_finalize                       (GObject                 *object);
 static void             xfce_displays_helper_reload                         (XfceDisplaysHelper      *helper);
-static guint8          *xfce_displays_helper_retry_read_edid_data           (Display                 *xdisplay,
-                                                                             XfceRROutput            *output);
 static GArray          *xfce_displays_helper_get_display_infos              (gint                     noutput,
                                                                              Display                 *xdisplay,
                                                                              GPtrArray               *outputs);
@@ -94,12 +92,12 @@ static void             xfce_displays_helper_set_profile_datetime           (Xfc
                                                                              const gchar             *profile_hash,
                                                                              const gchar             *datetime);
 static gchar           *xfce_displays_helper_get_matching_profile           (XfceDisplaysHelper      *helper);
-static gboolean         xfce_displays_helper_save_profile                   (XfceDisplaysHelper      *helper,
+static gchar           *xfce_displays_helper_save_profile                   (XfceDisplaysHelper      *helper,
                                                                              const gchar             *profile_hash,
                                                                              const gchar             *profile_name);
-static gboolean         xfce_displays_helper_create_profile                 (XfceDisplaysHelper      *helper);
+static gchar           *xfce_displays_helper_create_profile                 (XfceDisplaysHelper      *helper);
+static gchar           *xfce_displays_helper_profile_exists                 (XfceDisplaysHelper      *helper);
 static gchar           *xfce_displays_helper_generate_datetime              (void);
-static gboolean         xfce_displays_helper_profile_has_edid               (XfceDisplaysHelper      *helper);
 static GdkFilterReturn  xfce_displays_helper_screen_on_event                (GdkXEvent               *xevent,
                                                                              GdkEvent                *event,
                                                                              gpointer                 data);
@@ -323,7 +321,8 @@ xfce_displays_helper_init (XfceDisplaysHelper *helper)
             }
             else
             {
-                xfce_displays_helper_create_profile(helper);
+                gchar *new_profile = xfce_displays_helper_create_profile(helper);
+                g_free(new_profile);
             }
         }
         else
@@ -449,43 +448,6 @@ xfce_displays_helper_reload (XfceDisplaysHelper *helper)
 
 
 
-static guint8 *
-xfce_displays_helper_retry_read_edid_data(Display *xdisplay,
-                                          XfceRROutput *output)
-{
-    guint8    *edid_data = NULL;
-    XRRScreenResources *resources;
-    XRROutputInfo *current_info;
-    int current_connection = RR_Disconnected;
-
-    resources = XRRGetScreenResources(xdisplay, DefaultRootWindow(xdisplay));
-
-    if (resources)
-    {
-        current_info = XRRGetOutputInfo(xdisplay, resources, output->id);
-
-        if (current_info)
-        {
-            current_connection = current_info->connection;
-
-            if (current_connection == RR_Connected)
-            {
-                g_usleep(500000);
-
-                edid_data = xfce_randr_read_edid_data(xdisplay, output->id);
-            }
-
-            XRRFreeOutputInfo(current_info);
-        }
-
-        XRRFreeScreenResources(resources);
-    }
-
-    return edid_data;
-}
-
-
-
 static GArray *
 xfce_displays_helper_get_display_infos (gint       noutput,
                                         Display   *xdisplay,
@@ -505,9 +467,6 @@ xfce_displays_helper_get_display_infos (gint       noutput,
 
         output = g_ptr_array_index (outputs, m);
         edid_data = xfce_randr_read_edid_data (xdisplay, output->id);
-
-        if (!edid_data)
-            edid_data = xfce_displays_helper_retry_read_edid_data(xdisplay, output);
 
         if (edid_data) {
             rlinfo->edid = g_compute_checksum_for_data (G_CHECKSUM_SHA1 , edid_data, 128);
@@ -585,13 +544,18 @@ xfce_displays_helper_select_profile(XfceDisplaysHelper *helper,
                 g_free(selected_profile);
                 selected_profile = g_strdup(profile);
             }
+        } else {
+            xfsettings_dbg(XFSD_DEBUG_DISPLAYS, 
+                          "Profile %s has no datetime", profile);
         }
 
         g_free(datetime);
+        datetime = NULL;
     }
 
-    if (!selected_profile)
+    if (!selected_profile) {
         selected_profile = g_strdup((gchar *)g_list_nth_data(profiles, 0));
+    }
 
     if (!xfce_displays_helper_profile_has_datetime(helper, selected_profile, NULL))
         xfce_displays_helper_set_profile_datetime(helper, selected_profile, NULL);
@@ -660,22 +624,40 @@ xfce_displays_helper_get_matching_profile (XfceDisplaysHelper *helper)
 
 
 
-static gboolean
+static gchar *
 xfce_displays_helper_save_profile(XfceDisplaysHelper *helper,
                                     const gchar *profile_hash,
                                     const gchar *profile_name)
 {
-    g_return_val_if_fail(XFCE_IS_DISPLAYS_HELPER(helper), FALSE);
-    g_return_val_if_fail(profile_hash != NULL && *profile_hash != '\0', FALSE);
+    g_return_val_if_fail(XFCE_IS_DISPLAYS_HELPER(helper), NULL);
+    g_return_val_if_fail(profile_hash != NULL && *profile_hash != '\0', NULL);
     
     GError *error = NULL;
+    gchar *property = NULL;
+    gchar *existing_profile_name = NULL;
+    gchar *save_profile_name = NULL;
+    gchar *result = NULL;
+    XfceRandr *xfce_randr = NULL;
     
-    XfceRandr *xfce_randr = xfce_randr_new(helper->display, &error);
+    property = g_strdup_printf("/%s", profile_hash);
+    existing_profile_name = xfconf_channel_get_string(helper->channel, property, NULL);
+    gboolean is_update = (existing_profile_name != NULL);
+    
+    if (is_update) {
+        xfsettings_dbg(XFSD_DEBUG_DISPLAYS, 
+                      "Updating existing profile: %s (hash: %s)", 
+                      existing_profile_name, profile_hash);
+    } else {
+        xfsettings_dbg(XFSD_DEBUG_DISPLAYS, 
+                      "Creating new profile with hash: %s", profile_hash);
+    }
+    
+    xfce_randr = xfce_randr_new(helper->display, &error);
     if (G_UNLIKELY(xfce_randr == NULL)) {
         g_warning("Failed to create XfceRandr: %s", 
                   error ? error->message : "Unknown error");
         g_clear_error(&error);
-        return FALSE;
+        goto cleanup;
     }
     
     for (guint i = 0; i < xfce_randr->noutput; i++) {
@@ -683,13 +665,12 @@ xfce_displays_helper_save_profile(XfceDisplaysHelper *helper,
                                    helper->channel, i);
     }
     
-    gchar *property = g_strdup_printf("/%s", profile_hash);
-    gchar *save_profile_name = NULL;
     if (profile_name == NULL || *profile_name == '\0')
     {
-        save_profile_name = xfconf_channel_get_string(helper->channel, property, NULL);
-        if (save_profile_name == NULL)
-            save_profile_name = g_strdup("Unnamed Profile");
+        if (existing_profile_name != NULL)
+            save_profile_name = g_strdup(existing_profile_name);
+        else
+            save_profile_name = g_strdup("Auto Profile");
     } 
     else
         save_profile_name = g_strdup(profile_name);
@@ -697,41 +678,80 @@ xfce_displays_helper_save_profile(XfceDisplaysHelper *helper,
     xfconf_channel_set_string(helper->channel, property, save_profile_name);
     xfconf_channel_set_string(helper->channel, ACTIVE_PROFILE, profile_hash);
     
-    g_free(property);
-    g_free(save_profile_name);
-    xfce_randr_free(xfce_randr);
+    xfce_displays_helper_set_profile_datetime(helper, profile_hash, NULL);
     
-    return TRUE;
+    result = g_strdup(profile_hash);
+    
+cleanup:
+    g_free(property);
+    g_free(existing_profile_name);
+    g_free(save_profile_name);
+    if (xfce_randr)
+        xfce_randr_free(xfce_randr);
+    
+    return result;
 }
 
 
 
-static gboolean
+static gchar *
 xfce_displays_helper_create_profile(XfceDisplaysHelper *helper)
 {
-    g_return_val_if_fail(XFCE_IS_DISPLAYS_HELPER(helper), FALSE);
+    g_return_val_if_fail(XFCE_IS_DISPLAYS_HELPER(helper), NULL);
     
-    gchar *profile_name = xfce_displays_helper_generate_datetime();
+    gchar *profile_name = NULL;
+    gchar *profile_hash = NULL;
+    gchar *result = NULL;
+    
+    profile_name = xfce_displays_helper_generate_datetime();
     if (G_UNLIKELY(profile_name == NULL || *profile_name == '\0')) {
         g_warning("Failed to generate profile name");
         g_free(profile_name);
-        return FALSE;
+        return NULL;
     }
     
-    gchar *profile_hash = g_compute_checksum_for_string(G_CHECKSUM_SHA1, 
-                                                        profile_name, -1);
+    profile_hash = g_compute_checksum_for_string(G_CHECKSUM_SHA1, 
+                                                  profile_name, -1);
     if (G_UNLIKELY(profile_hash == NULL)) {
         g_warning("Failed to compute profile hash");
         g_free(profile_name);
-        return FALSE;
+        return NULL;
     }
 
-    gboolean success = xfce_displays_helper_save_profile(helper, profile_hash, profile_name);
+    result = xfce_displays_helper_save_profile(helper, profile_hash, profile_name);
 
     g_free(profile_hash);
     g_free(profile_name);
 
-    return success;
+    return result;
+}
+
+
+
+static gchar *
+xfce_displays_helper_profile_exists(XfceDisplaysHelper *helper)
+{
+    g_return_val_if_fail(XFCE_IS_DISPLAYS_HELPER(helper), NULL);
+    
+    gchar *profile = NULL;
+    
+    profile = xfce_displays_helper_get_matching_profile(helper);
+    
+    if (profile) {
+        xfce_displays_helper_set_profile_datetime(helper, profile, NULL);
+        return profile;
+    }
+    
+    profile = xfce_displays_helper_create_profile(helper);
+    
+    if (profile) {
+        xfsettings_dbg(XFSD_DEBUG_DISPLAYS, 
+                      "Successfully created new profile: %s", profile);
+    } else {
+        g_warning("Failed to create profile");
+    }
+    
+    return profile;
 }
 
 
@@ -751,28 +771,8 @@ xfce_displays_helper_generate_datetime(void)
 
 
 
-static gboolean
-xfce_displays_helper_profile_has_edid (XfceDisplaysHelper *helper)
-{
-    GArray *infos = xfce_displays_helper_get_display_infos(helper->outputs->len,
-                                                            helper->xdisplay,
-                                                            helper->outputs);
-    if (!infos)
-        return FALSE;
-
-    for (guint i = 0; i < infos->len; ++i) {
-        RLDisplayInfo *info = g_array_index(infos, RLDisplayInfo*, i);
-        if (!info->edid || *(info->edid) == '\0') {
-            rl_display_infos_free(infos);
-            return FALSE;
-        }
-    }
-
-    rl_display_infos_free(infos);
-    return TRUE;
-}
-
-
+static gboolean processing_event = FALSE;
+static gboolean display_grabbed = FALSE;
 
 static GdkFilterReturn
 xfce_displays_helper_screen_on_event (GdkXEvent *xevent,
@@ -780,14 +780,19 @@ xfce_displays_helper_screen_on_event (GdkXEvent *xevent,
                                       gpointer   data)
 {
     XfceDisplaysHelper *helper = XFCE_DISPLAYS_HELPER (data);
-    GPtrArray          *old_outputs;
+    GPtrArray          *old_outputs = NULL;
     XfceRRCrtc         *crtc = NULL;
     XfceRROutput       *output, *o;
     XEvent             *e = xevent;
     gint                event_num;
     gint                j;
     guint               n, m, nactive = 0;
-    gboolean            found = FALSE, changed = FALSE;
+    gboolean            changed = FALSE;
+    gboolean            profile_applied = FALSE;
+    GHashTable         *old_output_map = NULL;
+    GHashTableIter      iter;
+    gpointer            key, value;
+    gchar              *matching_profile = NULL;
 
     if (!e)
         return GDK_FILTER_CONTINUE;
@@ -796,6 +801,14 @@ xfce_displays_helper_screen_on_event (GdkXEvent *xevent,
 
     if (event_num == RRScreenChangeNotify)
     {
+        if (processing_event)
+        {
+            xfsettings_dbg (XFSD_DEBUG_DISPLAYS, 
+                           "Already processing an event, skipping.");
+            return GDK_FILTER_CONTINUE;
+        }
+        processing_event = TRUE;
+
         xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "RRScreenChangeNotify event received.");
         old_outputs = g_ptr_array_ref(helper->outputs);
         xfce_displays_helper_reload(helper);
@@ -805,81 +818,149 @@ xfce_displays_helper_screen_on_event (GdkXEvent *xevent,
 
         xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "Noutput: before = %d, after = %d.",
                         old_outputs->len, helper->outputs->len);
-        gchar *matching_profile = NULL;
-        matching_profile = xfce_displays_helper_get_matching_profile(helper);
 
-        if(!xfce_displays_helper_profile_has_edid(helper))
-            return GDK_FILTER_CONTINUE;
-
-        if (matching_profile)
+        if (monitor_increased || monitor_decreased)
         {
-            if (monitor_increased || monitor_decreased)
-                xfce_displays_helper_channel_apply(helper, matching_profile);
-            else
+            matching_profile = xfce_displays_helper_get_matching_profile(helper);
+
+            if (matching_profile)
+            {
+                if (monitor_increased)
+                {
+                    xfsettings_dbg (XFSD_DEBUG_DISPLAYS, 
+                                   "Applying existing profile: %s", matching_profile);
+                    xfce_displays_helper_channel_apply(helper, matching_profile);
+                    profile_applied = TRUE;
+                    
+                    xfce_displays_helper_set_profile_datetime(helper, matching_profile, NULL);
+                }
                 xfce_displays_helper_save_profile(helper, matching_profile, NULL);
 
-            g_ptr_array_unref(old_outputs);
-            g_free(matching_profile);
-            return GDK_FILTER_CONTINUE;
+                g_free(matching_profile);
+                matching_profile = NULL;
+            }
         }
 
         if (monitor_decreased)
         {
-            for (n = 0; n < old_outputs->len; ++n)
+            old_output_map = g_hash_table_new(g_direct_hash, g_direct_equal);
+            for (m = 0; m < old_outputs->len; ++m)
             {
-                found = FALSE;
-                output = g_ptr_array_index (old_outputs, n);
-                for (m = 0; m < helper->outputs->len && !found; ++m)
+                o = g_ptr_array_index (old_outputs, m);
+                g_hash_table_insert(old_output_map, GINT_TO_POINTER(o->id), o);
+            }
+
+            for (n = 0; n < helper->outputs->len; ++n)
+            {
+                output = g_ptr_array_index (helper->outputs, n);
+                g_hash_table_remove(old_output_map, GINT_TO_POINTER(output->id));
+                if (output->active)
+                    ++nactive;
+            }
+
+            if (g_hash_table_size(old_output_map) > 0)
+            {
+                g_hash_table_iter_init(&iter, old_output_map);
+                while (g_hash_table_iter_next(&iter, &key, &value))
                 {
-                    o = g_ptr_array_index (helper->outputs, m);
-                    found = o->id == output->id;
-                }
-                if (!found)
-                {
+                    output = (XfceRROutput *)value;
+                    
                     if (output->info->crtc != None)
-                        crtc = xfce_displays_helper_find_crtc_by_id (helper,
-                                                                     output->info->crtc);
+                        crtc = xfce_displays_helper_find_crtc_by_id (helper, output->info->crtc);
+                    
                     if (crtc)
                     {
                         crtc->mode = None;
                         xfce_displays_helper_disable_crtc (helper, crtc->id);
                     }
-                    /* if the output was active, we must recalculate the screen size */
+                    
                     changed |= output->active;
                 }
             }
 
-            /* Basically, this means the external output was disconnected,
-               so reenable the internal one if needed. */
-            for (n = 0; n < helper->outputs->len; ++n)
-            {
-                output = g_ptr_array_index (helper->outputs, n);
-                if (output->active)
-                    ++nactive;
-            }
+            g_hash_table_destroy(old_output_map);
+            old_output_map = NULL;
+
             if (nactive == 0)
+            {
+                xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "No active outputs, attempting to restore.");
                 xfce_displays_helper_toggle_internal (NULL, FALSE, helper);
-            else if (changed)
+                
+                nactive = 0;
+                for (n = 0; n < helper->outputs->len; ++n)
+                {
+                    output = g_ptr_array_index (helper->outputs, n);
+                    if (output->active)
+                        ++nactive;
+                }
+                
+                if (nactive == 0)
+                {
+                    xfsettings_dbg (XFSD_DEBUG_DISPLAYS, 
+                                   "CRITICAL: Still no active outputs after toggle_internal. "
+                                   "Attempting to enable first available output.");
+                    
+                    for (n = 0; n < helper->outputs->len; ++n)
+                    {
+                        output = g_ptr_array_index (helper->outputs, n);
+                        if (output->info->connection == RR_Connected)
+                        {
+                            crtc = xfce_displays_helper_find_usable_crtc (helper, output);
+                            if (crtc)
+                            {
+                                crtc->mode = output->preferred_mode;
+                                crtc->rotation = RR_Rotate_0;
+                                crtc->x = crtc->y = 0;
+                                
+                                for (j = 0; j < helper->resources->nmode; ++j)
+                                {
+                                    if (helper->resources->modes[j].id == output->preferred_mode)
+                                    {
+                                        crtc->width = helper->resources->modes[j].width;
+                                        crtc->height = helper->resources->modes[j].height;
+                                        break;
+                                    }
+                                }
+                                xfce_displays_helper_set_outputs (crtc, output);
+                                crtc->changed = TRUE;
+                                changed = TRUE;
+                                xfsettings_dbg (XFSD_DEBUG_DISPLAYS, 
+                                               "Emergency enabled output: %s", output->info->name);
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (nactive == 0)
+                    {
+                        g_critical ("FATAL: Unable to enable any output. "
+                                   "System may be in unusable state.");
+                    }
+                }
+            }
+            
+            if (changed)
                 xfce_displays_helper_apply_all (helper);
         }
         else
         {
-            /* Diff the new and old output list to find new outputs */
+            old_output_map = g_hash_table_new(g_direct_hash, g_direct_equal);
+            for (m = 0; m < old_outputs->len; ++m)
+            {
+                o = g_ptr_array_index (old_outputs, m);
+                g_hash_table_insert(old_output_map, GINT_TO_POINTER(o->id), o);
+            }
+
             for (n = 0; n < helper->outputs->len; ++n)
             {
-                found = FALSE;
                 output = g_ptr_array_index (helper->outputs, n);
-                for (m = 0; m < old_outputs->len && !found; ++m)
-                {
-                    o = g_ptr_array_index (old_outputs, m);
-                    found = o->id == output->id;
-                }
-                if (!found)
+                
+                if (!g_hash_table_remove(old_output_map, GINT_TO_POINTER(output->id)))
                 {
                     xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "New output connected: %s",
                                     output->info->name);
-                    /* need to enable crtc for output ? */
-                    if (output->info->crtc == None)
+                    
+                    if (!profile_applied && output->info->crtc == None)
                     {
                         xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "enabling crtc for %s", output->info->name);
                         crtc = xfce_displays_helper_find_usable_crtc (helper, output);
@@ -887,12 +968,10 @@ xfce_displays_helper_screen_on_event (GdkXEvent *xevent,
                         {
                             crtc->mode = output->preferred_mode;
                             crtc->rotation = RR_Rotate_0;
-G_GNUC_BEGIN_IGNORE_DEPRECATIONS
-                            if ((crtc->x > gdk_screen_width() + 1) || (crtc->y > gdk_screen_height() + 1)) {
-G_GNUC_END_IGNORE_DEPRECATIONS
-                                crtc->x = crtc->y = 0;
-                            }
-                            /* set width and height */
+                            
+                            crtc->x = 0;
+                            crtc->y = 0;
+                            
                             for (j = 0; j < helper->resources->nmode; ++j)
                             {
                                 if (helper->resources->modes[j].id == output->preferred_mode)
@@ -904,20 +983,47 @@ G_GNUC_END_IGNORE_DEPRECATIONS
                             }
                             xfce_displays_helper_set_outputs (crtc, output);
                             crtc->changed = TRUE;
+                            changed = TRUE;
                         }
                     }
-
-                    changed = TRUE;
                 }
             }
+
+            g_hash_table_destroy(old_output_map);
+            old_output_map = NULL;
+
             if (changed)
             {
-                xfce_displays_helper_apply_all (helper);
-                xfce_spawn_command_line (NULL, "xfce4-display-settings -m", FALSE, FALSE, TRUE, NULL);
-                xfce_displays_helper_create_profile(helper);
+                if (!profile_applied)
+                {
+                    xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "Applying new display configuration.");
+                    xfce_displays_helper_apply_all (helper);
+                    
+                    xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "Saving new display configuration as profile.");
+                    gchar *saved_profile = xfce_displays_helper_profile_exists(helper);
+                    if (saved_profile) {
+                        xfsettings_dbg (XFSD_DEBUG_DISPLAYS, 
+                                       "Profile saved successfully: %s", saved_profile);
+                        g_free(saved_profile);
+                    } else {
+                        g_warning("Failed to save display profile");
+                    }
+                    
+                    xfce_spawn_command_line (NULL, "xfce4-display-settings -m", FALSE, FALSE, TRUE, NULL);
+                }
             }
         }
-        g_ptr_array_unref (old_outputs);
+        
+        if (old_output_map)
+            g_hash_table_destroy(old_output_map);
+        
+        if (matching_profile)
+            g_free(matching_profile);
+        
+        if (old_outputs)
+            g_ptr_array_unref (old_outputs);
+        
+        processing_event = FALSE;
     }
 
     /* Pass the event on to GTK+ */
@@ -1727,6 +1833,8 @@ xfce_displays_helper_add_mode (XfceRRCrtc         *crtc,
 static void
 xfce_displays_helper_apply_all (XfceDisplaysHelper *helper)
 {
+    gboolean should_ungrab = FALSE;
+    
     g_assert (XFCE_IS_DISPLAYS_HELPER (helper) && helper->crtcs);
 
     helper->mm_width = helper->mm_height = helper->width = helper->height = 0;
@@ -1739,7 +1847,18 @@ xfce_displays_helper_apply_all (XfceDisplaysHelper *helper)
     gdk_x11_display_error_trap_push (helper->display);
 
     /* grab server to prevent clients from thinking no output is enabled */
-    gdk_x11_display_grab (helper->display);
+    /* Check if display is already grabbed to prevent deadlock */
+    if (!display_grabbed)
+    {
+        xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "Grabbing display.");
+        gdk_x11_display_grab (helper->display);
+        display_grabbed = TRUE;
+        should_ungrab = TRUE;
+    }
+    else
+    {
+        xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "Display already grabbed, skipping grab.");
+    }
 
     /* disable CRTCs that won't fit in the new screen */
     g_ptr_array_foreach (helper->crtcs, (GFunc) xfce_displays_helper_workaround_crtc_size, helper);
@@ -1758,12 +1877,25 @@ xfce_displays_helper_apply_all (XfceDisplaysHelper *helper)
                                  helper->primary);
 #endif
 
-    /* release the grab, changes are done */
-    gdk_display_sync (helper->display);
-    gdk_x11_display_ungrab (helper->display);
+    /* release the grab only if we acquired it in this call */
+    if (should_ungrab)
+    {
+        xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "Ungrabbing display.");
+        gdk_display_sync (helper->display);
+        gdk_x11_display_ungrab (helper->display);
+        display_grabbed = FALSE;
+    }
+    
     if (gdk_x11_display_error_trap_pop (helper->display) != 0)
     {
         g_critical ("Failed to apply display settings");
+        /* Ensure grab is released on error */
+        if (display_grabbed && should_ungrab)
+        {
+            xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "Error occurred, force ungrabbing display.");
+            gdk_x11_display_ungrab (helper->display);
+            display_grabbed = FALSE;
+        }
     }
 }
 
@@ -1828,6 +1960,9 @@ xfce_displays_helper_channel_property_changed (XfconfChannel      *channel,
                                                const GValue       *value,
                                                XfceDisplaysHelper *helper)
 {
+    gchar *active_profile;
+    gchar *property_path;
+    
     if (G_UNLIKELY (G_VALUE_HOLDS_STRING (value) &&
         g_strcmp0 (property_name, APPLY_SCHEME_PROP) == 0))
     {
@@ -1835,6 +1970,54 @@ xfce_displays_helper_channel_property_changed (XfconfChannel      *channel,
         xfce_displays_helper_channel_apply (helper, g_value_get_string (value));
         /* remove the apply property */
         xfconf_channel_reset_property (channel, APPLY_SCHEME_PROP, FALSE);
+    }
+    else
+    {
+        active_profile = xfconf_channel_get_string (helper->channel, ACTIVE_PROFILE, NULL);
+        if (active_profile && g_strcmp0 (active_profile, DEFAULT_SCHEME_NAME) != 0)
+        {
+            if (g_str_has_prefix (property_name, "/" DEFAULT_SCHEME_NAME "/"))
+            {
+                GHashTable *default_props;
+                GHashTableIter iter;
+                gchar *key;
+                GValue *val;
+                gchar *datetime;
+                
+                xfsettings_dbg (XFSD_DEBUG_DISPLAYS, 
+                               "Property '%s' changed, synchronizing to profile '%s'",
+                               property_name, active_profile);
+                
+                default_props = xfconf_channel_get_properties (helper->channel, 
+                                                               "/" DEFAULT_SCHEME_NAME);
+                
+                if (default_props)
+                {
+                    g_hash_table_iter_init (&iter, default_props);
+                    while (g_hash_table_iter_next (&iter, (gpointer *)&key, (gpointer *)&val))
+                    {
+                        const gchar *suffix = key + strlen("/" DEFAULT_SCHEME_NAME);
+                        
+                        property_path = g_strdup_printf ("/%s%s", active_profile, suffix);
+                        
+                        xfconf_channel_set_property (helper->channel, property_path, val);
+                        
+                        g_free (property_path);
+                    }
+                    
+                    datetime = xfce_displays_helper_generate_datetime ();
+                    xfce_displays_helper_set_profile_datetime (helper, active_profile, datetime);
+                    
+                    xfsettings_dbg (XFSD_DEBUG_DISPLAYS, 
+                                   "Profile '%s' synchronized at %s",
+                                   active_profile, datetime);
+                    
+                    g_free (datetime);
+                    g_hash_table_destroy (default_props);
+                }
+            }
+        }
+        g_free (active_profile);
     }
 }
 
