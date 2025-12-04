@@ -1507,12 +1507,7 @@ xfce_displays_helper_screen_on_event (GdkXEvent *xevent,
                     {
                         g_warning("Failed to migrate profile %s to EDID-based format",
                                  matching_profile);
-                        xfce_displays_helper_save_profile(helper, matching_profile, NULL);
                     }
-                }
-                else
-                {
-                    xfce_displays_helper_save_profile(helper, matching_profile, NULL);
                 }
 
                 g_free(matching_profile);
@@ -2485,7 +2480,9 @@ xfce_displays_helper_workaround_crtc_size (XfceRRCrtc         *crtc,
        It will be reenabled with its new mode (known to fit) after the screen size is
        changed, unless the user disabled it (no need to reenable it then). */
     crtc_info = XRRGetCrtcInfo (helper->xdisplay, helper->resources, crtc->id);
-    if ((crtc_info->x + crtc_info->width > (guint) helper->width) ||
+    if ((crtc_info->x < 0) ||
+        (crtc_info->y < 0) ||
+        (crtc_info->x + crtc_info->width > (guint) helper->width) ||
         (crtc_info->y + crtc_info->height > (guint) helper->height))
     {
         xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "CRTC %lu must be temporarily disabled.", crtc->id);
@@ -2685,6 +2682,15 @@ xfce_displays_helper_apply_all (XfceDisplaysHelper *helper)
 #ifdef HAS_RANDR_ONE_POINT_THREE
     /* Adjust positions to keep primary display at origin, preventing window movement */
     xfce_displays_helper_adjust_to_primary (helper);
+    
+    helper->min_x = helper->min_y = 32768;
+    g_ptr_array_foreach (helper->crtcs, (GFunc) xfce_displays_helper_get_topleftmost_pos, helper);
+    if (helper->min_x < 0 || helper->min_y < 0)
+    {
+        helper->width = 0;
+        helper->height = 0;
+        g_ptr_array_foreach (helper->crtcs, (GFunc) xfce_displays_helper_normalize_crtc, helper);
+    }
 #endif
 
     gdk_x11_display_error_trap_push (helper->display);
