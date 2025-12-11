@@ -398,7 +398,7 @@ display_setting_ask_fallback (GtkBuilder *builder)
     {
         /* Update the Fallback */
         for (i = 0; i < xfce_randr->noutput; i++)
-            xfce_randr_save_output (xfce_randr, "Fallback", display_channel, i);
+            xfce_randr_save_output_by_edid (xfce_randr, "Fallback", display_channel, i);
         return TRUE;
     }
     else
@@ -1367,7 +1367,7 @@ display_setting_primary_toggled (GtkWidget *widget,
     {
         /* Set currently active display as primary */
         xfce_randr->status[active_output]=XFCE_OUTPUT_STATUS_PRIMARY;
-        xfce_randr_save_output (xfce_randr, "Default", display_channel,
+        xfce_randr_save_output_by_edid (xfce_randr, "Default", display_channel,
                                 active_output);
         /* and all others as secondary */
         for (m = 0; m < xfce_randr->noutput; ++m)
@@ -1375,14 +1375,14 @@ display_setting_primary_toggled (GtkWidget *widget,
             if (m != active_output)
             {
                 xfce_randr->status[m]=XFCE_OUTPUT_STATUS_SECONDARY;
-                xfce_randr_save_output (xfce_randr, "Default", display_channel, m);
+                xfce_randr_save_output_by_edid (xfce_randr, "Default", display_channel, m);
             }
         }
     }
     else
     {
         xfce_randr->status[active_output]=XFCE_OUTPUT_STATUS_SECONDARY;
-        xfce_randr_save_output (xfce_randr, "Default", display_channel, active_output);
+        xfce_randr_save_output_by_edid (xfce_randr, "Default", display_channel, active_output);
     }
 
     /* Apply the changes */
@@ -1459,7 +1459,7 @@ display_setting_output_toggled (GtkSwitch       *widget,
     }
 
     /* Apply the changes */
-    xfce_randr_save_output (xfce_randr, "Default", display_channel, active_output);
+    xfce_randr_save_output_by_edid (xfce_randr, "Default", display_channel, active_output);
     xfce_randr_apply (xfce_randr, "Default", display_channel);
 
     foo_scroll_area_invalidate (FOO_SCROLL_AREA (randr_gui_area));
@@ -1686,7 +1686,7 @@ display_setting_apply (GtkWidget *widget, GtkBuilder *builder)
     guint i = 0;
 
     for (i=0; i < xfce_randr->noutput; i++)
-        xfce_randr_save_output (xfce_randr, "Default", display_channel, i);
+        xfce_randr_save_output_by_edid (xfce_randr, "Default", display_channel, i);
     xfce_randr_apply (xfce_randr, "Default", display_channel);
 
     display_setting_ask_fallback (builder);
@@ -1847,8 +1847,8 @@ display_settings_minimal_only_display1_toggled (GtkToggleButton *button,
     xfce_randr->mode[1] = None;
 
     /* Apply the changes */
-    xfce_randr_save_output (xfce_randr, "Default", display_channel, 0);
-    xfce_randr_save_output (xfce_randr, "Default", display_channel, 1);
+    xfce_randr_save_output_by_edid (xfce_randr, "Default", display_channel, 0);
+    xfce_randr_save_output_by_edid (xfce_randr, "Default", display_channel, 1);
     xfce_randr_apply (xfce_randr, "Default", display_channel);
 
     gtk_widget_set_sensitive (GTK_WIDGET(buttons), TRUE);
@@ -1877,8 +1877,8 @@ display_settings_minimal_only_display2_toggled (GtkToggleButton *button,
     xfce_randr->mode[0] = None;
 
     /* Apply the changes */
-    xfce_randr_save_output (xfce_randr, "Default", display_channel, 0);
-    xfce_randr_save_output (xfce_randr, "Default", display_channel, 1);
+    xfce_randr_save_output_by_edid (xfce_randr, "Default", display_channel, 0);
+    xfce_randr_save_output_by_edid (xfce_randr, "Default", display_channel, 1);
     xfce_randr_apply (xfce_randr, "Default", display_channel);
 
     gtk_widget_set_sensitive (GTK_WIDGET(buttons), TRUE);
@@ -1918,7 +1918,7 @@ display_settings_minimal_mirror_displays_toggled (GtkToggleButton *button,
         xfce_randr->rotation[n] = RR_Rotate_0;
         xfce_randr->position[n].x = 0;
         xfce_randr->position[n].y = 0;
-        xfce_randr_save_output (xfce_randr, "Default", display_channel, n);
+        xfce_randr_save_output_by_edid (xfce_randr, "Default", display_channel, n);
     }
     g_free (clonable_modes);
 
@@ -1967,8 +1967,8 @@ display_settings_minimal_extend_right_toggled (GtkToggleButton *button,
     xfce_randr->position[1].y = 0;
 
     /* Save changes to both displays */
-    xfce_randr_save_output (xfce_randr, "Default", display_channel, 0);
-    xfce_randr_save_output (xfce_randr, "Default", display_channel, 1);
+    xfce_randr_save_output_by_edid (xfce_randr, "Default", display_channel, 0);
+    xfce_randr_save_output_by_edid (xfce_randr, "Default", display_channel, 1);
 
     /* Apply all changes */
     xfce_randr_apply (xfce_randr, "Default", display_channel);
@@ -3830,7 +3830,7 @@ main (gint argc, gchar **argv)
 
         /* Store a Fallback of the current settings */
         for (i = 0; i < xfce_randr->noutput; i++)
-            xfce_randr_save_output (xfce_randr, "Fallback", display_channel, i);
+            xfce_randr_save_output_by_edid (xfce_randr, "Fallback", display_channel, i);
 
         if (xfce_randr->noutput <= 1 || !minimal)
             display_settings_show_main_dialog (display);

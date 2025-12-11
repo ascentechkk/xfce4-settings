@@ -186,4 +186,9 @@ void              xfce_randr_register_mode   (gint              width,
 
 void              xfce_randr_add_mode        (const gchar       *output_name);
 
+void              xfce_randr_save_output_by_edid  (XfceRandr            *randr,
+                                                   const gchar          *scheme,
+                                                   XfconfChannel        *channel,
+                                                   guint                 output);
+
 #endif /* !__XFCE_RANDR_H__ */
