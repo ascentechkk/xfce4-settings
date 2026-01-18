@@ -98,6 +98,17 @@ static gchar           *xfce_displays_helper_save_profile                   (Xfc
 static gchar           *xfce_displays_helper_create_profile                 (XfceDisplaysHelper      *helper);
 static gchar           *xfce_displays_helper_profile_exists                 (XfceDisplaysHelper      *helper);
 static gchar           *xfce_displays_helper_generate_datetime              (void);
+static gchar           *xfce_displays_helper_find_edid_key_for_output       (GHashTable              *saved_outputs,
+                                                                             const gchar             *scheme,
+                                                                             XfceRROutput            *output);
+static void             xfce_displays_helper_remove_output_name_properties  (XfceDisplaysHelper      *helper,
+                                                                             const gchar             *profile_hash);
+static gboolean         xfce_displays_helper_profile_has_edid_properties    (XfceDisplaysHelper      *helper,
+                                                                             const gchar             *profile_hash);
+static gboolean         xfce_displays_helper_migrate_profile_to_edid        (XfceDisplaysHelper      *helper,
+                                                                             const gchar             *profile_hash);
+static gboolean         xfce_displays_helper_all_outputs_have_edid          (XfceDisplaysHelper      *helper);
+static void             xfce_displays_helper_migrate_all_profiles           (XfceDisplaysHelper      *helper);
 static GdkFilterReturn  xfce_displays_helper_screen_on_event                (GdkXEvent               *xevent,
                                                                              GdkEvent                *event,
                                                                              gpointer                 data);
@@ -298,7 +309,6 @@ xfce_displays_helper_init (XfceDisplaysHelper *helper)
 
             /* remove any leftover apply property before setting the monitor */
             xfconf_channel_reset_property (helper->channel, APPLY_SCHEME_PROP, FALSE);
-            xfconf_channel_set_string (helper->channel, ACTIVE_PROFILE, DEFAULT_SCHEME_NAME);
 
             /* monitor channel changes */
             helper->handler = g_signal_connect (G_OBJECT (helper->channel),
@@ -311,18 +321,73 @@ xfce_displays_helper_init (XfceDisplaysHelper *helper)
 #endif
             xfce_randr_register_mode(1920, 1080, 60);
 
+            xfce_displays_helper_migrate_all_profiles(helper);
+
             gchar *matching_profile = NULL;
 
             matching_profile = xfce_displays_helper_get_matching_profile (helper);
             if (matching_profile)
             {
-                xfce_displays_helper_channel_apply (helper, matching_profile);
+                xfsettings_dbg(XFSD_DEBUG_DISPLAYS, 
+                              "Found matching profile: %s", matching_profile);
+                
+                /* Check if profile uses old output-name-based format */
+                if (!xfce_displays_helper_profile_has_edid_properties(helper, matching_profile))
+                {
+                    xfsettings_dbg(XFSD_DEBUG_DISPLAYS, 
+                                  "Profile %s uses old format, migrating to EDID-based", 
+                                  matching_profile);
+                    
+                    /* Apply old profile first to get current display state */
+                    xfce_displays_helper_channel_apply (helper, matching_profile);
+                    
+                    /* Migrate to EDID-based format */
+                    if (xfce_displays_helper_migrate_profile_to_edid(helper, matching_profile))
+                    {
+                        xfsettings_dbg(XFSD_DEBUG_DISPLAYS, 
+                                      "Successfully migrated profile %s to EDID-based format",
+                                      matching_profile);
+                    }
+                    else
+                    {
+                        g_warning("Failed to migrate profile %s to EDID-based format",
+                                 matching_profile);
+                    }
+                }
+                else
+                {
+                    xfsettings_dbg(XFSD_DEBUG_DISPLAYS, 
+                                  "Profile %s already uses EDID-based format", 
+                                  matching_profile);
+                    xfce_displays_helper_channel_apply (helper, matching_profile);
+                }
+                
                 g_free (matching_profile);
             }
             else
             {
-                gchar *new_profile = xfce_displays_helper_create_profile(helper);
-                g_free(new_profile);
+                xfsettings_dbg(XFSD_DEBUG_DISPLAYS, 
+                              "No matching profile found, creating new profile");
+                
+                /* Only create profile if all outputs have EDID */
+                if (xfce_displays_helper_all_outputs_have_edid(helper))
+                {
+                    gchar *new_profile = xfce_displays_helper_create_profile(helper);
+                    if (new_profile)
+                    {
+                        xfsettings_dbg(XFSD_DEBUG_DISPLAYS, 
+                                      "Created new EDID-based profile: %s", new_profile);
+                        g_free(new_profile);
+                    }
+                    else
+                    {
+                        g_warning("Failed to create new profile");
+                    }
+                }
+                else
+                {
+                    g_warning("Cannot create profile: some outputs lack EDID information");
+                }
             }
         }
         else
@@ -681,10 +746,14 @@ xfce_displays_helper_save_profile(XfceDisplaysHelper *helper,
         goto cleanup;
     }
     
+    /* Save each output using EDID-based keys (falls back to output name if no EDID) */
     for (guint i = 0; i < xfce_randr->noutput; i++) {
-        xfce_randr_save_output(xfce_randr, profile_hash, 
-                                   helper->channel, i);
+        xfce_randr_save_output_by_edid(xfce_randr, profile_hash, 
+                                       helper->channel, i);
     }
+    
+    /* Remove output-name-based properties, keeping only EDID-based ones */
+    xfce_displays_helper_remove_output_name_properties(helper, profile_hash);
     
     if (profile_name == NULL || *profile_name == '\0')
     {
@@ -792,6 +861,570 @@ xfce_displays_helper_generate_datetime(void)
 
 
 
+/**
+ * Find EDID-based key for an output in saved properties
+ * 
+ * This function searches through saved_outputs for an EDID-based key
+ * that matches the current output's EDID.
+ * 
+ * @return Newly allocated EDID key (e.g., "EDID_8c5ea17b...") or NULL if not found.
+ *         Caller must free with g_free().
+ */
+static gchar *
+xfce_displays_helper_find_edid_key_for_output(GHashTable *saved_outputs,
+                                                const gchar *scheme,
+                                                XfceRROutput *output)
+{
+    GHashTableIter iter;
+    gpointer key, value;
+    gchar *scheme_prefix;
+    gchar *edid_key = NULL;
+    gchar *current_edid = NULL;
+    guint8 *edid_data = NULL;
+    Display *xdisplay;
+    GdkDisplay *display;
+    
+    if (!saved_outputs || !scheme || !output)
+        return NULL;
+    
+    /* Get current output's EDID */
+    display = gdk_display_get_default();
+    if (display)
+    {
+        xdisplay = gdk_x11_display_get_xdisplay(display);
+        edid_data = xfce_randr_read_edid_data(xdisplay, output->id);
+        if (edid_data)
+        {
+            current_edid = g_compute_checksum_for_data(G_CHECKSUM_SHA1, edid_data, 128);
+            g_free(edid_data);
+        }
+    }
+    
+    if (!current_edid)
+    {
+        xfsettings_dbg(XFSD_DEBUG_DISPLAYS,
+                      "Could not read EDID for output %s, falling back to output name",
+                      output->info->name);
+        return NULL;
+    }
+    
+    xfsettings_dbg(XFSD_DEBUG_DISPLAYS,
+                  "Looking for EDID %s for output %s",
+                  current_edid, output->info->name);
+    
+    scheme_prefix = g_strdup_printf("/%s/EDID_", scheme);
+    
+    g_hash_table_iter_init(&iter, saved_outputs);
+    while (g_hash_table_iter_next(&iter, &key, &value))
+    {
+        const gchar *prop_key = (const gchar *)key;
+        
+        if (g_str_has_prefix(prop_key, scheme_prefix))
+        {
+            // Extract EDID identifier from key like "/scheme/EDID_xxx/Property"
+            const gchar *edid_part = prop_key + strlen(scheme_prefix);
+            const gchar *slash = strchr(edid_part, '/');
+            
+            if (slash)
+            {
+                gchar *candidate_edid = g_strndup(edid_part, slash - edid_part);
+                
+                // Compare with current output's EDID
+                if (g_strcmp0(candidate_edid, current_edid) == 0)
+                {
+                    // Found matching EDID!
+                    edid_key = g_strdup_printf("EDID_%s", candidate_edid);
+                    xfsettings_dbg(XFSD_DEBUG_DISPLAYS,
+                                  "Found matching EDID-based key '%s' for output %s",
+                                  edid_key, output->info->name);
+                    g_free(candidate_edid);
+                    break;
+                }
+                
+                g_free(candidate_edid);
+            }
+        }
+    }
+    
+    g_free(scheme_prefix);
+    g_free(current_edid);
+    return edid_key;
+}
+
+
+
+/**
+ * Check if profile has EDID-based properties
+ * 
+ * Returns TRUE if the profile uses EDID-based format (e.g., /profile/EDID_xxx/...)
+ * Returns FALSE if it uses old output-name-based format (e.g., /profile/HDMI-1/...)
+ */
+static gboolean
+xfce_displays_helper_profile_has_edid_properties(XfceDisplaysHelper *helper,
+                                                   const gchar *profile_hash)
+{
+    GHashTable *properties;
+    GHashTableIter iter;
+    gpointer key, value;
+    gchar *profile_prefix;
+    gboolean has_edid = FALSE;
+    gboolean has_output_name = FALSE;
+    
+    if (!helper || !profile_hash)
+        return FALSE;
+    
+    profile_prefix = g_strdup_printf("/%s/", profile_hash);
+    properties = xfconf_channel_get_properties(helper->channel, profile_prefix);
+    
+    if (properties)
+    {
+        g_hash_table_iter_init(&iter, properties);
+        while (g_hash_table_iter_next(&iter, &key, &value))
+        {
+            const gchar *prop_key = (const gchar *)key;
+            
+            if (g_str_has_prefix(prop_key, profile_prefix))
+            {
+                const gchar *after_prefix = prop_key + strlen(profile_prefix);
+                
+                /* Check for EDID-based properties */
+                if (g_str_has_prefix(after_prefix, "EDID_"))
+                {
+                    has_edid = TRUE;
+                }
+                /* Check for output-name-based properties (skip datetime) */
+                else if (strchr(after_prefix, '/') && 
+                         g_strcmp0(after_prefix, "datetime") != 0 &&
+                         !g_str_has_prefix(after_prefix, "datetime/"))
+                {
+                    has_output_name = TRUE;
+                }
+            }
+        }
+        g_hash_table_destroy(properties);
+    }
+    
+    g_free(profile_prefix);
+    
+    return has_edid && !has_output_name;
+}
+
+
+
+/**
+ * Migrate a profile from output-name-based to EDID-based format
+ * 
+ * This function reads the current display configuration, saves it using EDID-based
+ * keys, and removes the old output-name-based properties.
+ * 
+ * Returns TRUE on success, FALSE on failure.
+ */
+static gboolean
+xfce_displays_helper_migrate_profile_to_edid(XfceDisplaysHelper *helper,
+                                               const gchar *profile_hash)
+{
+    GError *error = NULL;
+    XfceRandr *xfce_randr = NULL;
+    gboolean success = FALSE;
+    
+    g_return_val_if_fail(XFCE_IS_DISPLAYS_HELPER(helper), FALSE);
+    g_return_val_if_fail(profile_hash != NULL && *profile_hash != '\0', FALSE);
+    
+    xfsettings_dbg(XFSD_DEBUG_DISPLAYS, 
+                  "Starting migration of profile %s to EDID-based format", 
+                  profile_hash);
+    
+    /* Create XfceRandr to read current display state */
+    xfce_randr = xfce_randr_new(helper->display, &error);
+    if (G_UNLIKELY(xfce_randr == NULL))
+    {
+        g_warning("Failed to create XfceRandr for migration: %s", 
+                  error ? error->message : "Unknown error");
+        g_clear_error(&error);
+        return FALSE;
+    }
+    
+    /* Save each output using EDID-based keys */
+    for (guint i = 0; i < xfce_randr->noutput; i++)
+    {
+        xfce_randr_save_output_by_edid(xfce_randr, profile_hash, 
+                                       helper->channel, i);
+    }
+    
+    /* Remove old output-name-based properties */
+    xfce_displays_helper_remove_output_name_properties(helper, profile_hash);
+    
+    /* Update timestamp */
+    xfce_displays_helper_set_profile_datetime(helper, profile_hash, NULL);
+    
+    success = TRUE;
+    xfsettings_dbg(XFSD_DEBUG_DISPLAYS, 
+                  "Successfully migrated profile %s to EDID-based format", 
+                  profile_hash);
+    
+    xfce_randr_free(xfce_randr);
+    return success;
+}
+
+
+
+/**
+ * Check if all connected outputs have EDID information
+ * 
+ * Returns TRUE if all outputs have EDID, FALSE otherwise.
+ * This is used to determine if we can create an EDID-based profile.
+ */
+static gboolean
+xfce_displays_helper_all_outputs_have_edid(XfceDisplaysHelper *helper)
+{
+    Display *xdisplay;
+    guint n;
+    
+    g_return_val_if_fail(XFCE_IS_DISPLAYS_HELPER(helper), FALSE);
+    
+    if (!helper->outputs || helper->outputs->len == 0)
+        return FALSE;
+    
+    xdisplay = helper->xdisplay;
+    
+    for (n = 0; n < helper->outputs->len; ++n)
+    {
+        XfceRROutput *output = g_ptr_array_index(helper->outputs, n);
+        guint8 *edid_data = xfce_randr_read_edid_data(xdisplay, output->id);
+        
+        if (!edid_data)
+        {
+            xfsettings_dbg(XFSD_DEBUG_DISPLAYS,
+                          "Output %s lacks EDID information", 
+                          output->info->name);
+            return FALSE;
+        }
+        
+        g_free(edid_data);
+    }
+    
+    return TRUE;
+}
+
+
+
+static void
+xfce_displays_helper_migrate_all_profiles(XfceDisplaysHelper *helper)
+{
+    GHashTable *properties;
+    GHashTableIter iter;
+    gpointer key, value;
+    GPtrArray *profiles_to_migrate;
+    
+    g_return_if_fail(XFCE_IS_DISPLAYS_HELPER(helper));
+    
+    properties = xfconf_channel_get_properties(helper->channel, "/");
+    if (!properties)
+        return;
+    
+    profiles_to_migrate = g_ptr_array_new_with_free_func(g_free);
+    
+    g_hash_table_iter_init(&iter, properties);
+    while (g_hash_table_iter_next(&iter, &key, &value))
+    {
+        const gchar *prop_key = (const gchar *)key;
+        gchar **elements = g_strsplit(prop_key, "/", -1);
+        gint num_elements = 0;
+        
+        while (elements[num_elements] != NULL)
+            num_elements++;
+        
+        if (num_elements == 2 && elements[1] != NULL)
+        {
+            const gchar *profile_hash = elements[1];
+            
+            if (g_strcmp0(profile_hash, "ActiveProfile") != 0 &&
+                g_strcmp0(profile_hash, "Notify") != 0 &&
+                g_strcmp0(profile_hash, "Default") != 0 &&
+                g_strcmp0(profile_hash, "Schemes") != 0 &&
+                g_strcmp0(profile_hash, "RLModelEnabled") != 0)
+            {
+                gboolean has_old_outputs = FALSE;
+                gchar *profile_path = g_strdup_printf("/%s", profile_hash);
+                gchar *profile_prefix = g_strdup_printf("/%s/", profile_hash);
+                GHashTable *profile_props = xfconf_channel_get_properties(helper->channel, profile_path);
+                
+                if (profile_props)
+                {
+                    GHashTableIter profile_iter;
+                    gpointer profile_key, profile_value;
+                    
+                    g_hash_table_iter_init(&profile_iter, profile_props);
+                    while (g_hash_table_iter_next(&profile_iter, &profile_key, &profile_value))
+                    {
+                        const gchar *prop = (const gchar *)profile_key;
+                        if (g_str_has_prefix(prop, profile_prefix) && !strstr(prop, "/EDID_"))
+                        {
+                            const gchar *after_prefix = prop + strlen(profile_prefix);
+                            
+                            if (g_strcmp0(after_prefix, "datetime") != 0 && 
+                                !g_str_has_prefix(after_prefix, "datetime/"))
+                            {
+                                const gchar *slash = strchr(after_prefix, '/');
+                                if (slash)
+                                {
+                                    gchar *output_name = g_strndup(after_prefix, slash - after_prefix);
+                                    gboolean is_output_name = g_regex_match_simple(
+                                        "^(HDMI|DP|eDP|VGA|LVDS|DVI|DisplayPort|Analog|Digital|TV|S-video|TMDS|PANEL)(-[0-9]+)?$",
+                                        output_name, 0, 0);
+                                    g_free(output_name);
+                                    
+                                    if (is_output_name)
+                                    {
+                                        has_old_outputs = TRUE;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    g_hash_table_destroy(profile_props);
+                }
+                
+                g_free(profile_path);
+                g_free(profile_prefix);
+                
+                if (has_old_outputs)
+                {
+                    g_ptr_array_add(profiles_to_migrate, g_strdup(profile_hash));
+                }
+            }
+        }
+        
+        g_strfreev(elements);
+    }
+    
+    g_hash_table_destroy(properties);
+    
+    if (profiles_to_migrate->len == 0)
+    {
+        g_ptr_array_unref(profiles_to_migrate);
+        return;
+    }
+    
+    for (guint i = 0; i < profiles_to_migrate->len; i++)
+    {
+        const gchar *profile_hash = g_ptr_array_index(profiles_to_migrate, i);
+        gchar *profile_path = g_strdup_printf("/%s", profile_hash);
+        gchar *profile_name = xfconf_channel_get_string(helper->channel, profile_path, NULL);
+        gchar *profile_prefix = g_strdup_printf("/%s/", profile_hash);
+        GHashTable *profile_props = xfconf_channel_get_properties(helper->channel, profile_prefix);
+        GHashTable *outputs_map = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, 
+                                                         (GDestroyNotify)g_hash_table_destroy);
+        
+        
+        if (profile_props)
+        {
+            GHashTableIter profile_iter;
+            gpointer profile_key, profile_value;
+            
+            g_hash_table_iter_init(&profile_iter, profile_props);
+            while (g_hash_table_iter_next(&profile_iter, &profile_key, &profile_value))
+            {
+                const gchar *prop = (const gchar *)profile_key;
+                
+                if (g_str_has_prefix(prop, profile_prefix))
+                {
+                    const gchar *after_prefix = prop + strlen(profile_prefix);
+                    const gchar *slash = strchr(after_prefix, '/');
+                    
+                    if (slash != NULL && !g_str_has_prefix(after_prefix, "datetime"))
+                    {
+                        gchar *output_name = g_strndup(after_prefix, slash - after_prefix);
+                        
+                        if (!g_str_has_prefix(output_name, "EDID_"))
+                        {
+                            GHashTable *output_props = g_hash_table_lookup(outputs_map, output_name);
+                            if (!output_props)
+                            {
+                                output_props = g_hash_table_new_full(g_str_hash, g_str_equal, 
+                                                                    g_free, (GDestroyNotify)g_value_unset);
+                                g_hash_table_insert(outputs_map, g_strdup(output_name), output_props);
+                            }
+                            
+                            const gchar *prop_name = slash + 1;
+                            GValue *copied_value = g_new0(GValue, 1);
+                            g_value_init(copied_value, G_VALUE_TYPE((GValue*)profile_value));
+                            g_value_copy((GValue*)profile_value, copied_value);
+                            g_hash_table_insert(output_props, g_strdup(prop_name), copied_value);
+                        }
+                        
+                        g_free(output_name);
+                    }
+                }
+            }
+            
+            g_hash_table_destroy(profile_props);
+        }
+        
+        xfce_displays_helper_remove_output_name_properties(helper, profile_hash);
+        
+        if (g_hash_table_size(outputs_map) > 0)
+        {
+            GHashTableIter outputs_iter;
+            gpointer output_name_key, output_props_value;
+            
+            g_hash_table_iter_init(&outputs_iter, outputs_map);
+            while (g_hash_table_iter_next(&outputs_iter, &output_name_key, &output_props_value))
+            {
+                const gchar *output_name = (const gchar *)output_name_key;
+                GHashTable *output_props = (GHashTable *)output_props_value;
+                GValue *edid_value = g_hash_table_lookup(output_props, "EDID");
+                
+                if (edid_value && G_VALUE_HOLDS_STRING(edid_value))
+                {
+                    const gchar *edid = g_value_get_string(edid_value);
+                    
+                    if (edid && strlen(edid) > 0)
+                    {
+                        gchar *edid_prefix = g_strdup_printf("/%s/EDID_%s", profile_hash, edid);
+                        GHashTableIter props_iter;
+                        gpointer prop_name_key, prop_value_value;
+                        
+                        
+                        g_hash_table_iter_init(&props_iter, output_props);
+                        while (g_hash_table_iter_next(&props_iter, &prop_name_key, &prop_value_value))
+                        {
+                            const gchar *prop_name = (const gchar *)prop_name_key;
+                            GValue *prop_value = (GValue *)prop_value_value;
+                            gchar *new_prop_path = g_strdup_printf("%s/%s", edid_prefix, prop_name);
+                            
+                            if (G_VALUE_HOLDS_STRING(prop_value))
+                            {
+                                xfconf_channel_set_string(helper->channel, new_prop_path, 
+                                                         g_value_get_string(prop_value));
+                            }
+                            else if (G_VALUE_HOLDS_INT(prop_value))
+                            {
+                                xfconf_channel_set_int(helper->channel, new_prop_path, 
+                                                      g_value_get_int(prop_value));
+                            }
+                            else if (G_VALUE_HOLDS_DOUBLE(prop_value))
+                            {
+                                xfconf_channel_set_double(helper->channel, new_prop_path, 
+                                                         g_value_get_double(prop_value));
+                            }
+                            else if (G_VALUE_HOLDS_BOOLEAN(prop_value))
+                            {
+                                xfconf_channel_set_bool(helper->channel, new_prop_path, 
+                                                       g_value_get_boolean(prop_value));
+                            }
+                            
+                            g_free(new_prop_path);
+                        }
+                        
+                        g_free(edid_prefix);
+                    }
+                }
+            }
+        }
+        
+        g_hash_table_destroy(outputs_map);
+        
+        
+        g_free(profile_path);
+        g_free(profile_name);
+        g_free(profile_prefix);
+    }
+    
+    g_ptr_array_unref(profiles_to_migrate);
+    
+}
+
+
+
+/**
+ * Remove all output-name-based properties from a profile
+ * 
+ * After xfce_randr_save_output_by_edid, this ensures only EDID-based keys remain.
+ * This is necessary because save_output_by_edid creates both EDID and output-name keys.
+ */
+static void
+xfce_displays_helper_remove_output_name_properties(XfceDisplaysHelper *helper,
+                                                     const gchar *profile_hash)
+{
+    GHashTable *properties;
+    GHashTableIter iter;
+    gpointer key, value;
+    gchar *profile_prefix;
+    GPtrArray *keys_to_remove;
+    gint removed_count = 0;
+    
+    if (!helper || !profile_hash)
+        return;
+    
+    gchar *profile_path = g_strdup_printf("/%s", profile_hash);
+    profile_prefix = g_strdup_printf("/%s/", profile_hash);
+    properties = xfconf_channel_get_properties(helper->channel, profile_path);
+    
+    if (properties)
+    {
+        keys_to_remove = g_ptr_array_new_with_free_func(g_free);
+        
+        g_hash_table_iter_init(&iter, properties);
+        while (g_hash_table_iter_next(&iter, &key, &value))
+        {
+            const gchar *prop_key = (const gchar *)key;
+            
+            if (g_str_has_prefix(prop_key, profile_prefix) && !strstr(prop_key, "/EDID_"))
+            {
+                const gchar *after_prefix = prop_key + strlen(profile_prefix);
+                
+                if (g_strcmp0(after_prefix, "datetime") == 0 || g_str_has_prefix(after_prefix, "datetime/"))
+                {
+                    continue;
+                }
+                
+                const gchar *slash = strchr(after_prefix, '/');
+                if (slash)
+                {
+                    gchar *output_name = g_strndup(after_prefix, slash - after_prefix);
+                    gboolean is_output_name = g_regex_match_simple(
+                        "^(HDMI|DP|eDP|VGA|LVDS|DVI|DisplayPort|Analog|Digital|TV|S-video|TMDS|PANEL)(-[0-9]+)?$",
+                        output_name, 0, 0);
+                    
+                    xfsettings_dbg(XFSD_DEBUG_DISPLAYS,
+                                 "Checking: after_prefix='%s', output_name='%s', is_output_name=%d",
+                                 after_prefix, output_name, is_output_name);
+                    
+                    g_free(output_name);
+                    
+                    if (is_output_name)
+                    {
+                        g_ptr_array_add(keys_to_remove, g_strdup(prop_key));
+                    }
+                }
+                else if (g_regex_match_simple(
+                    "^(HDMI|DP|eDP|VGA|LVDS|DVI|DisplayPort|Analog|Digital|TV|S-video|TMDS|PANEL)(-[0-9]+)?$",
+                    after_prefix, 0, 0))
+                {
+                    g_ptr_array_add(keys_to_remove, g_strdup(prop_key));
+                }
+            }
+        }
+        
+        for (guint i = 0; i < keys_to_remove->len; i++)
+        {
+            const gchar *key_to_remove = g_ptr_array_index(keys_to_remove, i);
+            xfconf_channel_reset_property(helper->channel, key_to_remove, TRUE);
+            removed_count++;
+        }
+        
+        g_ptr_array_unref(keys_to_remove);
+        g_hash_table_destroy(properties);
+    }
+    
+    g_free(profile_path);
+    g_free(profile_prefix);
+}
+
+
+
 static gboolean processing_event = FALSE;
 static gboolean display_grabbed = FALSE;
 
@@ -846,19 +1479,60 @@ xfce_displays_helper_screen_on_event (GdkXEvent *xevent,
 
             if (matching_profile)
             {
-                if (monitor_increased)
+                xfsettings_dbg (XFSD_DEBUG_DISPLAYS, 
+                               "Found matching profile for changed monitor config: %s", 
+                               matching_profile);
+                
+                gboolean needs_migration = !xfce_displays_helper_profile_has_edid_properties(helper, matching_profile);
+                
+                xfsettings_dbg (XFSD_DEBUG_DISPLAYS, 
+                               "Applying profile: %s", matching_profile);
+                xfce_displays_helper_channel_apply(helper, matching_profile);
+                profile_applied = TRUE;
+                
+                xfce_displays_helper_set_profile_datetime(helper, matching_profile, NULL);
+                
+                if (needs_migration)
                 {
-                    xfsettings_dbg (XFSD_DEBUG_DISPLAYS, 
-                                   "Applying existing profile: %s", matching_profile);
-                    xfce_displays_helper_channel_apply(helper, matching_profile);
-                    profile_applied = TRUE;
+                    xfsettings_dbg(XFSD_DEBUG_DISPLAYS, 
+                                  "Profile %s uses old format, migrating to EDID-based", 
+                                  matching_profile);
                     
-                    xfce_displays_helper_set_profile_datetime(helper, matching_profile, NULL);
+                    if (xfce_displays_helper_migrate_profile_to_edid(helper, matching_profile))
+                    {
+                        xfsettings_dbg(XFSD_DEBUG_DISPLAYS, 
+                                      "Successfully migrated profile %s", matching_profile);
+                    }
+                    else
+                    {
+                        g_warning("Failed to migrate profile %s to EDID-based format",
+                                 matching_profile);
+                        xfce_displays_helper_save_profile(helper, matching_profile, NULL);
+                    }
                 }
-                xfce_displays_helper_save_profile(helper, matching_profile, NULL);
+                else
+                {
+                    xfce_displays_helper_save_profile(helper, matching_profile, NULL);
+                }
 
                 g_free(matching_profile);
                 matching_profile = NULL;
+            }
+            else
+            {
+                xfsettings_dbg(XFSD_DEBUG_DISPLAYS, 
+                              "No matching profile found for changed monitor config");
+                
+                if (xfce_displays_helper_all_outputs_have_edid(helper))
+                {
+                    xfsettings_dbg(XFSD_DEBUG_DISPLAYS, 
+                                  "All outputs have EDID, creating new profile");
+                }
+                else
+                {
+                    xfsettings_dbg(XFSD_DEBUG_DISPLAYS, 
+                                  "Some outputs lack EDID, skipping profile creation");
+                }
             }
         }
 
@@ -960,7 +1634,7 @@ xfce_displays_helper_screen_on_event (GdkXEvent *xevent,
                 }
             }
             
-            if (changed)
+            if (changed && !profile_applied)
                 xfce_displays_helper_apply_all (helper);
         }
         else
@@ -1020,14 +1694,24 @@ xfce_displays_helper_screen_on_event (GdkXEvent *xevent,
                     xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "Applying new display configuration.");
                     xfce_displays_helper_apply_all (helper);
                     
-                    xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "Saving new display configuration as profile.");
-                    gchar *saved_profile = xfce_displays_helper_profile_exists(helper);
-                    if (saved_profile) {
+                    /* Save profile only if all outputs have EDID */
+                    if (xfce_displays_helper_all_outputs_have_edid(helper))
+                    {
                         xfsettings_dbg (XFSD_DEBUG_DISPLAYS, 
-                                       "Profile saved successfully: %s", saved_profile);
-                        g_free(saved_profile);
-                    } else {
-                        g_warning("Failed to save display profile");
+                                       "Saving new display configuration as EDID-based profile.");
+                        gchar *saved_profile = xfce_displays_helper_profile_exists(helper);
+                        if (saved_profile) {
+                            xfsettings_dbg (XFSD_DEBUG_DISPLAYS, 
+                                           "Profile saved successfully: %s", saved_profile);
+                            g_free(saved_profile);
+                        } else {
+                            g_warning("Failed to save display profile");
+                        }
+                    }
+                    else
+                    {
+                        xfsettings_dbg (XFSD_DEBUG_DISPLAYS, 
+                                       "Skipping profile save: some outputs lack EDID information");
                     }
                     
                     xfce_spawn_command_line (NULL, "xfce4-display-settings -m", FALSE, FALSE, TRUE, NULL);
@@ -1116,36 +1800,67 @@ xfce_displays_helper_load_from_xfconf (XfceDisplaysHelper *helper,
     Rotation     rot;
     gint         x, y, n, m, int_value;
     gboolean     active;
+    gchar       *edid_key = NULL;
+    const gchar *output_identifier = NULL;
 
     g_assert (XFCE_IS_DISPLAYS_HELPER (helper) && helper->resources && output);
 
     active = output->active;
 
+    /* Try to find EDID-based key first (preferred for portability) */
+    edid_key = xfce_displays_helper_find_edid_key_for_output(saved_outputs, scheme, output);
+    
+    if (edid_key)
+    {
+        /* Found EDID-based key, use it */
+        output_identifier = edid_key;
+        xfsettings_dbg(XFSD_DEBUG_DISPLAYS,
+                      "Loading output %s using EDID-based key: %s",
+                      output->info->name, edid_key);
+    }
+    else
+    {
+        /* No EDID-based key found, fall back to output name (legacy compatibility) */
+        output_identifier = output->info->name;
+        xfsettings_dbg(XFSD_DEBUG_DISPLAYS,
+                      "Loading output %s using output-name-based key (legacy)",
+                      output->info->name);
+    }
+
     /* does this output exist in xfconf? */
-    g_snprintf (property, sizeof (property), OUTPUT_FMT, scheme, output->info->name);
+    g_snprintf (property, sizeof (property), OUTPUT_FMT, scheme, output_identifier);
     value = g_hash_table_lookup (saved_outputs, property);
 
     if (value == NULL || !G_VALUE_HOLDS_STRING (value))
+    {
+        g_free(edid_key);
         return active;
+    }
 
 #ifdef HAS_RANDR_ONE_POINT_THREE
     if (helper->has_1_3)
     {
         /* is it the primary output? */
         g_snprintf (property, sizeof (property), PRIMARY_PROP, scheme,
-                    output->info->name);
+                    output_identifier);
         value = g_hash_table_lookup (saved_outputs, property);
-        if (G_VALUE_HOLDS_BOOLEAN (value) && g_value_get_boolean (value))
+        /* Only set primary if not already set, to maintain consistency and prevent window movement */
+        if (G_VALUE_HOLDS_BOOLEAN (value) && g_value_get_boolean (value) && helper->primary == None)
+        {
             helper->primary = output->id;
+        }
     }
 #endif
 
     /* status */
-    g_snprintf (property, sizeof (property), ACTIVE_PROP, scheme, output->info->name);
+    g_snprintf (property, sizeof (property), ACTIVE_PROP, scheme, output_identifier);
     value = g_hash_table_lookup (saved_outputs, property);
 
     if (value == NULL || !G_VALUE_HOLDS_BOOLEAN (value))
+    {
+        g_free(edid_key);
         return active;
+    }
 
     /* Get the associated CRTC */
     crtc = xfce_displays_helper_find_usable_crtc (helper, output);
@@ -1169,7 +1884,7 @@ xfce_displays_helper_load_from_xfconf (XfceDisplaysHelper *helper,
     }
 
     /* rotation */
-    g_snprintf (property, sizeof (property), ROTATION_PROP, scheme, output->info->name);
+    g_snprintf (property, sizeof (property), ROTATION_PROP, scheme, output_identifier);
     value = g_hash_table_lookup (saved_outputs, property);
     if (G_VALUE_HOLDS_INT (value))
         int_value = g_value_get_int (value);
@@ -1186,7 +1901,7 @@ xfce_displays_helper_load_from_xfconf (XfceDisplaysHelper *helper,
     }
 
     /* reflection */
-    g_snprintf (property, sizeof (property), REFLECTION_PROP, scheme, output->info->name);
+    g_snprintf (property, sizeof (property), REFLECTION_PROP, scheme, output_identifier);
     value = g_hash_table_lookup (saved_outputs, property);
     if (G_VALUE_HOLDS_STRING (value))
         str_value = g_value_get_string (value);
@@ -1216,7 +1931,7 @@ xfce_displays_helper_load_from_xfconf (XfceDisplaysHelper *helper,
     }
 
     /* resolution */
-    g_snprintf (property, sizeof (property), RESOLUTION_PROP, scheme, output->info->name);
+    g_snprintf (property, sizeof (property), RESOLUTION_PROP, scheme, output_identifier);
     value = g_hash_table_lookup (saved_outputs, property);
     if (value == NULL || !G_VALUE_HOLDS_STRING (value))
         str_value = "";
@@ -1224,7 +1939,7 @@ xfce_displays_helper_load_from_xfconf (XfceDisplaysHelper *helper,
         str_value = g_value_get_string (value);
 
     /* refresh rate */
-    g_snprintf (property, sizeof (property), RRATE_PROP, scheme, output->info->name);
+    g_snprintf (property, sizeof (property), RRATE_PROP, scheme, output_identifier);
     value = g_hash_table_lookup (saved_outputs, property);
     if (G_VALUE_HOLDS_DOUBLE (value))
         output_rate = g_value_get_double (value);
@@ -1236,7 +1951,7 @@ xfce_displays_helper_load_from_xfconf (XfceDisplaysHelper *helper,
     {
         /* scaling X */
         g_snprintf (property, sizeof (property), SCALEX_PROP, scheme,
-                    output->info->name);
+                    output_identifier);
         value = g_hash_table_lookup (saved_outputs, property);
         if (G_VALUE_HOLDS_DOUBLE (value))
             scalex = g_value_get_double (value);
@@ -1245,7 +1960,7 @@ xfce_displays_helper_load_from_xfconf (XfceDisplaysHelper *helper,
 
         /* scaling Y */
         g_snprintf (property, sizeof (property), SCALEY_PROP, scheme,
-                    output->info->name);
+                    output_identifier);
         value = g_hash_table_lookup (saved_outputs, property);
         if (G_VALUE_HOLDS_DOUBLE (value))
             scaley = g_value_get_double (value);
@@ -1330,7 +2045,7 @@ xfce_displays_helper_load_from_xfconf (XfceDisplaysHelper *helper,
 
     /* position, x */
     g_snprintf (property, sizeof (property), POSX_PROP, scheme,
-                output->info->name);
+                output_identifier);
     value = g_hash_table_lookup (saved_outputs, property);
     if (G_VALUE_HOLDS_INT (value))
         x = g_value_get_int (value);
@@ -1339,7 +2054,7 @@ xfce_displays_helper_load_from_xfconf (XfceDisplaysHelper *helper,
 
     /* position, y */
     g_snprintf (property, sizeof (property), POSY_PROP, scheme,
-                output->info->name);
+                output_identifier);
     value = g_hash_table_lookup (saved_outputs, property);
     if (G_VALUE_HOLDS_INT (value))
         y = g_value_get_int (value);
@@ -1355,6 +2070,9 @@ xfce_displays_helper_load_from_xfconf (XfceDisplaysHelper *helper,
     }
 
     xfce_displays_helper_set_outputs (crtc, output);
+
+    /* Clean up */
+    g_free(edid_key);
 
     return active;
 }
@@ -1654,12 +2372,12 @@ xfce_displays_helper_normalize_crtc (XfceRRCrtc         *crtc,
         crtc->changed = TRUE;
     }
 
-    xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "Normalized CRTC %lu: size=%dx%d, pos=%dx%d.",
-                    crtc->id, crtc->width, crtc->height, crtc->x, crtc->y);
+    xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "Normalized CRTC %lu: size=%dx%d, scale=%.2fx%.2f, pos=%dx%d.",
+                    crtc->id, crtc->width, crtc->height, crtc->scalex, crtc->scaley, crtc->x, crtc->y);
 
     /* calculate the total screen size */
-    helper->width = MAX (helper->width, crtc->x + crtc->width * crtc->scalex);
-    helper->height = MAX (helper->height, crtc->y + crtc->height * crtc->scaley);
+    helper->width = MAX (helper->width, crtc->x + (gint)(crtc->width * crtc->scalex));
+    helper->height = MAX (helper->height, crtc->y + (gint)(crtc->height * crtc->scaley));
 
     /* The 'physical size' of an X screen is meaningless if that screen
      * can consist of many monitors. So just pick a size that make the
@@ -1670,6 +2388,74 @@ xfce_displays_helper_normalize_crtc (XfceRRCrtc         *crtc,
     helper->mm_width = (helper->width / 96.0) * 25.4 + 0.5;
     helper->mm_height = (helper->height / 96.0) * 25.4 + 0.5;
 }
+
+
+
+#ifdef HAS_RANDR_ONE_POINT_THREE
+/* Adjust all CRTC positions relative to the primary display to keep it at origin.
+   This prevents windows from moving when changing display arrangements. */
+static void
+xfce_displays_helper_adjust_to_primary (XfceDisplaysHelper *helper)
+{
+    gint primary_x = 0, primary_y = 0;
+    gboolean primary_found = FALSE;
+    guint n;
+    gint m;
+    
+    g_assert (XFCE_IS_DISPLAYS_HELPER (helper));
+    
+    if (!helper->has_1_3 || helper->primary == None)
+        return;
+    
+    /* Find the primary display's current position after normalization */
+    for (n = 0; n < helper->crtcs->len; ++n)
+    {
+        XfceRRCrtc *crtc = g_ptr_array_index (helper->crtcs, n);
+        
+        if (crtc->mode == None)
+            continue;
+        
+        for (m = 0; m < crtc->noutput; ++m)
+        {
+            if (crtc->outputs[m] == (RROutput)helper->primary)
+            {
+                primary_x = crtc->x;
+                primary_y = crtc->y;
+                primary_found = TRUE;
+                break;
+            }
+        }
+        if (primary_found)
+            break;
+    }
+    
+    /* If primary is not at origin, adjust all displays */
+    if (primary_found && (primary_x != 0 || primary_y != 0))
+    {
+        /* Reset screen size calculation */
+        helper->width = 0;
+        helper->height = 0;
+        
+        /* Adjust all CRTCs */
+        for (n = 0; n < helper->crtcs->len; ++n)
+        {
+            XfceRRCrtc *crtc = g_ptr_array_index (helper->crtcs, n);
+            
+            if (crtc->mode == None)
+                continue;
+            
+            crtc->x -= primary_x;
+            crtc->y -= primary_y;
+            crtc->changed = TRUE;
+            
+            /* Recalculate screen size */
+            helper->width = MAX (helper->width, crtc->x + (gint)(crtc->width * crtc->scalex));
+            helper->height = MAX (helper->height, crtc->y + (gint)(crtc->height * crtc->scaley));
+        }
+        
+    }
+}
+#endif
 
 
 
@@ -1771,11 +2557,15 @@ xfce_displays_helper_apply_crtc (XfceRRCrtc         *crtc,
     /* check if we really need to do something */
     if (crtc->changed)
     {
-        xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "Applying changes to CRTC %lu.", crtc->id);
+        xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "Applying changes to CRTC %lu (mode=%lu, pos=%dx%d, outputs=%d).", 
+                        crtc->id, crtc->mode, crtc->x, crtc->y, crtc->noutput);
 
         if (crtc->mode == None) {
+            xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "Disabling CRTC %lu.", crtc->id);
             ret = xfce_displays_helper_disable_crtc (helper, crtc->id);
         } else {
+            xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "Enabling CRTC %lu with mode %lu at position %dx%d.", 
+                            crtc->id, crtc->mode, crtc->x, crtc->y);
             xfce_displays_helper_apply_crtc_transform (crtc, helper);
 
             ret = XRRSetCrtcConfig (helper->xdisplay, helper->resources, crtc->id,
@@ -1784,9 +2574,18 @@ xfce_displays_helper_apply_crtc (XfceRRCrtc         *crtc,
         }
 
         if (ret == RRSetConfigSuccess)
+        {
+            xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "CRTC %lu configured successfully.", crtc->id);
             crtc->changed = FALSE;
+        }
         else
-            g_warning ("Failed to configure CRTC %lu.", crtc->id);
+        {
+            g_warning ("Failed to configure CRTC %lu (error code: %d).", crtc->id, ret);
+        }
+    }
+    else
+    {
+        xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "CRTC %lu unchanged, skipping.", crtc->id);
     }
 }
 
@@ -1861,9 +2660,32 @@ xfce_displays_helper_apply_all (XfceDisplaysHelper *helper)
     helper->mm_width = helper->mm_height = helper->width = helper->height = 0;
     helper->min_x = helper->min_y = 32768;
 
+#ifdef HAS_RANDR_ONE_POINT_THREE
+    /* If no primary display is set, use the first active output as primary.
+       This ensures consistent behavior and prevents windows from moving. */
+    if (helper->has_1_3 && helper->primary == None)
+    {
+        guint n;
+        for (n = 0; n < helper->crtcs->len; ++n)
+        {
+            XfceRRCrtc *crtc = g_ptr_array_index (helper->crtcs, n);
+            if (crtc->mode != None && crtc->noutput > 0)
+            {
+                helper->primary = crtc->outputs[0];
+                break;
+            }
+        }
+    }
+#endif
+
     /* normalization and screen size calculation */
     g_ptr_array_foreach (helper->crtcs, (GFunc) xfce_displays_helper_get_topleftmost_pos, helper);
     g_ptr_array_foreach (helper->crtcs, (GFunc) xfce_displays_helper_normalize_crtc, helper);
+    
+#ifdef HAS_RANDR_ONE_POINT_THREE
+    /* Adjust positions to keep primary display at origin, preventing window movement */
+    xfce_displays_helper_adjust_to_primary (helper);
+#endif
 
     gdk_x11_display_error_trap_push (helper->display);
 
@@ -1881,8 +2703,34 @@ xfce_displays_helper_apply_all (XfceDisplaysHelper *helper)
         xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "Display already grabbed, skipping grab.");
     }
 
-    /* disable CRTCs that won't fit in the new screen */
-    g_ptr_array_foreach (helper->crtcs, (GFunc) xfce_displays_helper_workaround_crtc_size, helper);
+G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+    gint current_width = gdk_screen_width();
+    gint current_height = gdk_screen_height();
+G_GNUC_END_IGNORE_DEPRECATIONS
+
+    /* If we're shrinking the screen size, we need to disable ALL CRTCs first,
+       otherwise XRRSetScreenSize will fail because active CRTCs would be outside
+       the new screen bounds. */
+    if (helper->width < current_width || helper->height < current_height)
+    {
+        guint n;
+        xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "Screen size will shrink, disabling all CRTCs first.");
+        
+        for (n = 0; n < helper->crtcs->len; ++n)
+        {
+            XfceRRCrtc *crtc = g_ptr_array_index (helper->crtcs, n);
+            if (crtc->mode != None)
+            {
+                xfce_displays_helper_disable_crtc (helper, crtc->id);
+                crtc->changed = TRUE;
+            }
+        }
+    }
+    else
+    {
+        /* Only disable CRTCs that won't fit in the new screen */
+        g_ptr_array_foreach (helper->crtcs, (GFunc) xfce_displays_helper_workaround_crtc_size, helper);
+    }
 
     /* set the screen size only if it's really needed and valid */
     xfce_displays_helper_set_screen_size (helper);
@@ -2014,16 +2862,65 @@ xfce_displays_helper_channel_property_changed (XfconfChannel      *channel,
                 
                 if (default_props)
                 {
+                    GHashTable *connected_edids;
+                    guint n;
+                    
+                    /* Build a hash table of currently connected EDIDs */
+                    connected_edids = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+                    for (n = 0; n < helper->outputs->len; ++n)
+                    {
+                        XfceRROutput *output;
+                        guint8 *edid_data;
+                        gchar *edid_hash;
+                        
+                        output = g_ptr_array_index (helper->outputs, n);
+                        if (output->info->connection == RR_Connected)
+                        {
+                            edid_data = xfce_randr_read_edid_data (helper->xdisplay, output->id);
+                            if (edid_data)
+                            {
+                                edid_hash = g_compute_checksum_for_data (G_CHECKSUM_SHA1, edid_data, 128);
+                                g_hash_table_add (connected_edids, edid_hash);
+                                g_free (edid_data);
+                            }
+                        }
+                    }
+                    
                     g_hash_table_iter_init (&iter, default_props);
                     while (g_hash_table_iter_next (&iter, (gpointer *)&key, (gpointer *)&val))
                     {
                         const gchar *suffix = key + strlen("/" DEFAULT_SCHEME_NAME);
                         
-                        property_path = g_strdup_printf ("/%s%s", active_profile, suffix);
+                        /* Skip empty suffix or non-EDID based properties */
+                        if (!suffix || !*suffix)
+                            continue;
                         
-                        xfconf_channel_set_property (helper->channel, property_path, val);
-                        
-                        g_free (property_path);
+                        /* Only copy EDID-based properties (EDID_xxx) for currently connected monitors */
+                        if (g_str_has_prefix (suffix, "/EDID_"))
+                        {
+                            /* Extract EDID hash from suffix like "/EDID_abc123/Property" */
+                            const gchar *edid_start = suffix + strlen ("/EDID_");
+                            const gchar *edid_end = strchr (edid_start, '/');
+                            
+                            if (edid_end)
+                            {
+                                gchar *edid_from_key = g_strndup (edid_start, edid_end - edid_start);
+                                
+                                /* Only sync if this EDID is currently connected */
+                                if (g_hash_table_contains (connected_edids, edid_from_key))
+                                {
+                                    property_path = g_strdup_printf ("/%s%s", active_profile, suffix);
+                                    xfconf_channel_set_property (helper->channel, property_path, val);
+                                    g_free (property_path);
+                                }
+                                else
+                                {
+                                    xfsettings_dbg (XFSD_DEBUG_DISPLAYS,
+                                                   "Skipping sync for disconnected EDID: %s", edid_from_key);
+                                }
+                                g_free (edid_from_key);
+                            }
+                        }
                     }
                     
                     datetime = xfce_displays_helper_generate_datetime ();
@@ -2034,6 +2931,7 @@ xfce_displays_helper_channel_property_changed (XfconfChannel      *channel,
                                    active_profile, datetime);
                     
                     g_free (datetime);
+                    g_hash_table_destroy (connected_edids);
                     g_hash_table_destroy (default_props);
                 }
             }

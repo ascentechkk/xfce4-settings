@@ -267,7 +267,8 @@ xfce_randr_populate (XfceRandr *randr,
         randr->friendly_name[m] = xfce_randr_friendly_name (randr, m, output_ids[m]);
 
         /* Update display info, primary display may have changed. */
-        xfce_randr_save_output (randr, "Default", display_channel, m);
+        /* Use EDID-based save for consistent profile structure */
+        xfce_randr_save_output_by_edid (randr, "Default", display_channel, m);
 
         /* Replace spaces with underscore in name for xfconf compatibility */
         g_strcanon(randr->priv->output_info[m]->name, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_<>", '_');
@@ -447,11 +448,11 @@ xfce_randr_save_output (XfceRandr     *randr,
 
     g_snprintf (property, sizeof (property), "/%s/%s/EDID", scheme,
                 randr->priv->output_info[output]->name);
-    xfconf_channel_set_string (channel, property, randr->priv->edid[output]);
+    xfconf_channel_set_string (channel, property, randr->priv->edid[output] ? randr->priv->edid[output] : "");
 
     g_snprintf (property, sizeof (property), "/%s/%s/RLMODEL", scheme,
                 randr->priv->output_info[output]->name);
-    xfconf_channel_set_string (channel, property, randr->priv->rlmodel[output]);
+    xfconf_channel_set_string (channel, property, randr->priv->rlmodel[output] ? randr->priv->rlmodel[output] : "");
 
     if (mode == NULL)
         return;
@@ -1010,4 +1011,99 @@ xfce_randr_add_mode(const gchar *output_name)
     if(!g_spawn_command_line_async(cmd, &error)) {
         return;
     }
+}
+
+
+
+void
+xfce_randr_save_output_by_edid (XfceRandr     *randr,
+                                const gchar   *scheme,
+                                XfconfChannel *channel,
+                                guint          output)
+{
+    gchar             property[512];
+    gchar            *str_value;
+    const XfceRRMode *mode;
+    gint              degrees;
+    const gchar      *edid;
+
+    g_return_if_fail (randr != NULL && scheme != NULL);
+    g_return_if_fail (XFCONF_IS_CHANNEL (channel));
+    g_return_if_fail (output < randr->noutput);
+
+    /* Get the EDID for this output */
+    edid = randr->priv->edid[output];
+    
+    /* If no EDID available, fall back to output name based save */
+    if (edid == NULL || *edid == '\0')
+    {
+        xfce_randr_save_output (randr, scheme, channel, output);
+        return;
+    }
+
+    /* save the device name using EDID as key */
+    g_snprintf (property, sizeof (property), "/%s/EDID_%s", scheme, edid);
+    xfconf_channel_set_string (channel, property, randr->friendly_name[output]);
+
+    mode = xfce_randr_find_mode_by_id (randr, output, randr->mode[output]);
+
+    g_snprintf (property, sizeof (property), "/%s/EDID_%s/Active", scheme, edid);
+    xfconf_channel_set_bool (channel, property, mode != NULL);
+
+    g_snprintf (property, sizeof (property), "/%s/EDID_%s/EDID", scheme, edid);
+    xfconf_channel_set_string (channel, property, edid);
+
+    g_snprintf (property, sizeof (property), "/%s/EDID_%s/RLMODEL", scheme, edid);
+    xfconf_channel_set_string (channel, property, randr->priv->rlmodel[output] ? randr->priv->rlmodel[output] : "");
+
+    g_snprintf (property, sizeof (property), "/%s/EDID_%s/OutputName", scheme, edid);
+    xfconf_channel_set_string (channel, property, randr->priv->output_info[output]->name);
+
+    if (mode == NULL)
+        return;
+
+    str_value = g_strdup_printf ("%dx%d", mode->width, mode->height);
+    g_snprintf (property, sizeof (property), "/%s/EDID_%s/Resolution", scheme, edid);
+    xfconf_channel_set_string (channel, property, str_value);
+    g_free (str_value);
+
+    g_snprintf (property, sizeof (property), "/%s/EDID_%s/RefreshRate", scheme, edid);
+    xfconf_channel_set_double (channel, property, mode->rate);
+
+    switch (randr->rotation[output] & XFCE_RANDR_ROTATIONS_MASK)
+    {
+        case RR_Rotate_90:  degrees = 90;  break;
+        case RR_Rotate_180: degrees = 180; break;
+        case RR_Rotate_270: degrees = 270; break;
+        default:            degrees = 0;   break;
+    }
+
+    g_snprintf (property, sizeof (property), "/%s/EDID_%s/Rotation", scheme, edid);
+    xfconf_channel_set_int (channel, property, degrees);
+
+    switch (randr->rotation[output] & XFCE_RANDR_REFLECTIONS_MASK)
+    {
+        case RR_Reflect_X:              str_value = "X";  break;
+        case RR_Reflect_Y:              str_value = "Y";  break;
+        case RR_Reflect_X|RR_Reflect_Y: str_value = "XY"; break;
+        default:                        str_value = "0";  break;
+    }
+
+    g_snprintf (property, sizeof (property), "/%s/EDID_%s/Reflection", scheme, edid);
+    xfconf_channel_set_string (channel, property, str_value);
+
+#ifdef HAS_RANDR_ONE_POINT_THREE
+    g_snprintf (property, sizeof (property), "/%s/EDID_%s/Primary", scheme, edid);
+    xfconf_channel_set_bool (channel, property, randr->status[output] == XFCE_OUTPUT_STATUS_PRIMARY);
+
+    g_snprintf (property, sizeof (property), "/%s/EDID_%s/Scale/X", scheme, edid);
+    xfconf_channel_set_double (channel, property, roundf (randr->scalex[output] * 10) / 10);
+    g_snprintf (property, sizeof (property), "/%s/EDID_%s/Scale/Y", scheme, edid);
+    xfconf_channel_set_double (channel, property, roundf (randr->scaley[output] * 10) / 10);
+#endif
+
+    g_snprintf (property, sizeof (property), "/%s/EDID_%s/Position/X", scheme, edid);
+    xfconf_channel_set_int (channel, property, MAX (randr->position[output].x, 0));
+    g_snprintf (property, sizeof (property), "/%s/EDID_%s/Position/Y", scheme, edid);
+    xfconf_channel_set_int (channel, property, MAX (randr->position[output].y, 0));
 }
