@@ -53,6 +53,11 @@
 #undef HAS_RANDR_ONE_POINT_THREE
 #endif
 
+/* Display calculation constants */
+#define DEFAULT_DPI 96.0
+#define INCH_TO_MM 25.4
+#define ROUNDING_OFFSET 0.5
+
 /* Xfconf properties */
 #define APPLY_SCHEME_PROP    "/Schemes/Apply"
 #define DEFAULT_SCHEME_NAME  "Default"
@@ -2380,8 +2385,8 @@ xfce_displays_helper_normalize_crtc (XfceRRCrtc         *crtc,
      *
      * Firefox and Evince apparently believe what X tells them.
      */
-    helper->mm_width = (helper->width / 96.0) * 25.4 + 0.5;
-    helper->mm_height = (helper->height / 96.0) * 25.4 + 0.5;
+    helper->mm_width = (helper->width / DEFAULT_DPI) * INCH_TO_MM + ROUNDING_OFFSET;
+    helper->mm_height = (helper->height / DEFAULT_DPI) * INCH_TO_MM + ROUNDING_OFFSET;
 }
 
 
@@ -2427,9 +2432,8 @@ xfce_displays_helper_adjust_to_primary (XfceDisplaysHelper *helper)
     /* If primary is not at origin, adjust all displays */
     if (primary_found && (primary_x != 0 || primary_y != 0))
     {
-        /* Reset screen size calculation */
-        helper->width = 0;
-        helper->height = 0;
+        gint min_x = G_MAXINT, min_y = G_MAXINT;
+        gint max_x = G_MININT, max_y = G_MININT;
         
         /* Adjust all CRTCs */
         for (n = 0; n < helper->crtcs->len; ++n)
@@ -2443,11 +2447,18 @@ xfce_displays_helper_adjust_to_primary (XfceDisplaysHelper *helper)
             crtc->y -= primary_y;
             crtc->changed = TRUE;
             
-            /* Recalculate screen size */
-            helper->width = MAX (helper->width, crtc->x + (gint)(crtc->width * crtc->scalex));
-            helper->height = MAX (helper->height, crtc->y + (gint)(crtc->height * crtc->scaley));
+            min_x = MIN (min_x, crtc->x);
+            min_y = MIN (min_y, crtc->y);
+            max_x = MAX (max_x, crtc->x + (gint)(crtc->width * crtc->scalex));
+            max_y = MAX (max_y, crtc->y + (gint)(crtc->height * crtc->scaley));
         }
         
+        helper->width = max_x - min_x;
+        helper->height = max_y - min_y;
+        
+        helper->mm_width = (helper->width / DEFAULT_DPI) * INCH_TO_MM + ROUNDING_OFFSET;
+        helper->mm_height = (helper->height / DEFAULT_DPI) * INCH_TO_MM + ROUNDING_OFFSET;
+    
     }
 }
 #endif
@@ -2480,10 +2491,9 @@ xfce_displays_helper_workaround_crtc_size (XfceRRCrtc         *crtc,
        It will be reenabled with its new mode (known to fit) after the screen size is
        changed, unless the user disabled it (no need to reenable it then). */
     crtc_info = XRRGetCrtcInfo (helper->xdisplay, helper->resources, crtc->id);
-    if ((crtc_info->x < 0) ||
-        (crtc_info->y < 0) ||
-        (crtc_info->x + crtc_info->width > (guint) helper->width) ||
-        (crtc_info->y + crtc_info->height > (guint) helper->height))
+    
+    if ((crtc_info->x >= 0 && crtc_info->x + crtc_info->width > (guint) helper->width) ||
+        (crtc_info->y >= 0 && crtc_info->y + crtc_info->height > (guint) helper->height))
     {
         xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "CRTC %lu must be temporarily disabled.", crtc->id);
         if (xfce_displays_helper_disable_crtc (helper, crtc->id) == RRSetConfigSuccess)
@@ -2681,15 +2691,61 @@ xfce_displays_helper_apply_all (XfceDisplaysHelper *helper)
     
 #ifdef HAS_RANDR_ONE_POINT_THREE
     /* Adjust positions to keep primary display at origin, preventing window movement */
-    xfce_displays_helper_adjust_to_primary (helper);
-    
-    helper->min_x = helper->min_y = 32768;
-    g_ptr_array_foreach (helper->crtcs, (GFunc) xfce_displays_helper_get_topleftmost_pos, helper);
-    if (helper->min_x < 0 || helper->min_y < 0)
+    if (helper->has_1_3 && helper->primary != None)
     {
-        helper->width = 0;
-        helper->height = 0;
-        g_ptr_array_foreach (helper->crtcs, (GFunc) xfce_displays_helper_normalize_crtc, helper);
+        gint primary_x = -1, primary_y = -1;
+        guint n;
+        gboolean would_create_negative = FALSE;
+        
+        /* Find the primary display's position after normalization */
+        for (n = 0; n < helper->crtcs->len; ++n)
+        {
+            XfceRRCrtc *crtc = g_ptr_array_index (helper->crtcs, n);
+            if (crtc->mode == None)
+                continue;
+            
+            for (gint m = 0; m < crtc->noutput; ++m)
+            {
+                if (crtc->outputs[m] == (RROutput)helper->primary)
+                {
+                    primary_x = crtc->x;
+                    primary_y = crtc->y;
+                    break;
+                }
+            }
+            if (primary_x >= 0)
+                break;
+        }
+        
+        /* Check if adjusting to primary would create negative coordinates */
+        if (primary_x > 0 || primary_y > 0)
+        {
+            for (n = 0; n < helper->crtcs->len; ++n)
+            {
+                XfceRRCrtc *crtc = g_ptr_array_index (helper->crtcs, n);
+                if (crtc->mode == None)
+                    continue;
+                
+                if (crtc->x - primary_x < 0 || crtc->y - primary_y < 0)
+                {
+                    would_create_negative = TRUE;
+                    xfsettings_dbg (XFSD_DEBUG_DISPLAYS, 
+                                   "Skipping adjust_to_primary: would create negative coordinates that require renormalization");
+                    break;
+                }
+            }
+        }
+        
+        /* Only adjust if it won't create negative coordinates */
+        if (!would_create_negative && (primary_x > 0 || primary_y > 0))
+        {
+            xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "Adjusting to primary at (%d,%d)", primary_x, primary_y);
+            xfce_displays_helper_adjust_to_primary (helper);
+        }
+        else if (!would_create_negative)
+        {
+            xfsettings_dbg (XFSD_DEBUG_DISPLAYS, "Primary already at origin, no adjustment needed");
+        }
     }
 #endif
 
